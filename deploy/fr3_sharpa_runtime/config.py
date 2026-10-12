@@ -1,0 +1,17 @@
+"""Frozen defaults for the first FR3 + Sharpa deployment runtime."""
+
+from pathlib import Path
+
+from .protocol import ACTION_DIM, ACTION_HORIZON, FPS
+
+CONFIG_NAME = "pi05_fr3_sharpa_tier_a_b1_20hz"
+CHECKPOINT = Path("/home/user/checkpoints/pi05_fr3_sharpa_tier_a_b1_20hz/tier_a_b1_20hz_30k/29999")
+NORM_STATS = Path("/home/user/sharpa_training_assets/fr3_sharpa/tier_a_b1_20hz/norm_stats.json")
+POLICY_URL = "ws://127.0.0.1:18765"
+ACTION_HZ = FPS
+SOURCE = "openpi"
+FR3_TOPIC = "/teleop/arm_commands"
+SHARPA_LEFT_TOPIC = "/teleop/sharpa/left/openpi_target"
+SHARPA_RIGHT_TOPIC = "/teleop/sharpa/right/openpi_target"
+STATE_DIM = ACTION_DIM
+CHUNK_LENGTH = ACTION_HORIZON

@@ -1,6 +1,10 @@
 import dataclasses
 import functools
+import csv
+import datetime
+import json
 import logging
+import pathlib
 import platform
 from typing import Any
 
@@ -26,6 +30,70 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+
+
+class LocalMetricsLogger:
+    """Persist training metrics locally even when Weights & Biases is disabled."""
+
+    _fields = ("step", "loss", "learning_rate", "grad_norm", "param_norm", "timestamp")
+
+    def __init__(self, checkpoint_dir: epath.Path, config: _config.TrainConfig):
+        # Use pathlib for CSV text I/O; etils.epath does not support newline=.
+        self.checkpoint_dir = pathlib.Path(str(checkpoint_dir))
+        self.config = config
+        self.csv_path = self.checkpoint_dir / "train_metrics.csv"
+        self.summary_path = self.checkpoint_dir / "train_summary.json"
+        self.learning_rate = config.lr_schedule.create()
+        self.best_loss = float("inf")
+        self.best_loss_step = None
+        self.final_loss = None
+        if self.csv_path.exists():
+            with self.csv_path.open() as f:
+                for row in csv.DictReader(f):
+                    loss = float(row["loss"])
+                    self.final_loss = loss
+                    if loss < self.best_loss:
+                        self.best_loss, self.best_loss_step = loss, int(row["step"])
+            self._file = self.csv_path.open("a", newline="")
+            self._writer = csv.DictWriter(self._file, fieldnames=self._fields)
+        else:
+            self._file = self.csv_path.open("w", newline="")
+            self._writer = csv.DictWriter(self._file, fieldnames=self._fields)
+            self._writer.writeheader()
+        self._file.flush()
+
+    def write(self, step: int, info: dict[str, Any]) -> None:
+        loss = float(info["loss"])
+        row = {
+            "step": step,
+            "loss": loss,
+            "learning_rate": float(self.learning_rate(step)),
+            "grad_norm": float(info["grad_norm"]),
+            "param_norm": float(info["param_norm"]),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        self._writer.writerow(row)
+        self._file.flush()
+        self.final_loss = loss
+        if loss < self.best_loss:
+            self.best_loss, self.best_loss_step = loss, step
+        self._write_summary()
+
+    def _write_summary(self) -> None:
+        payload = {
+            "experiment_name": self.config.exp_name,
+            "config_name": self.config.name,
+            "dataset": getattr(self.config.data, "repo_id", None),
+            "total_steps": self.config.num_train_steps,
+            "best_loss": self.best_loss if self.best_loss_step is not None else None,
+            "best_loss_step": self.best_loss_step,
+            "final_loss": self.final_loss,
+            "checkpoint_path": str(self.checkpoint_dir),
+        }
+        self.summary_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    def close(self) -> None:
+        self._file.close()
 
 
 def init_logging():
@@ -215,6 +283,7 @@ def main(config: _config.TrainConfig):
         overwrite=config.overwrite,
         resume=config.resume,
     )
+    local_metrics = LocalMetricsLogger(config.checkpoint_dir, config)
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
     data_loader = _data_loader.create_data_loader(
@@ -266,6 +335,7 @@ def main(config: _config.TrainConfig):
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
+            local_metrics.write(step, reduced_info)
             infos = []
         batch = next(data_iter)
 
@@ -274,6 +344,7 @@ def main(config: _config.TrainConfig):
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
+    local_metrics.close()
 
 
 if __name__ == "__main__":

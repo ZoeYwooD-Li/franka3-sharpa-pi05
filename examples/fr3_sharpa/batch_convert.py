@@ -86,7 +86,11 @@ def main(input_root: Path, output_root: Path, hz: float = 30.0, tolerance_ms: fl
     accepted_sources: list[Path] = []
     accepted_intervals: dict[str, list[tuple[float, float]]] = {}
     for bag in episodes:
+        # Cleaned exports preserve provenance under source_collection_state.json.
+        # Accept the legacy collection_state.json name as well.
         state_path = bag / "collection_state.json"
+        if not state_path.is_file():
+            state_path = bag / "source_collection_state.json"
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
         if not include_unfinalized and state.get("finalized") is not True:
             manifest["rejected"].append({"episode": bag.name, "bag": str(bag), "reason": "not_finalized",
