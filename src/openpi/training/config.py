@@ -452,8 +452,9 @@ class LeRobotFr3SharpaDataConfig(DataConfigFactory):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform({
             "observation/image": "observation.images.cam0",
-            "observation/left_wrist_image": "observation.images.cam1",
-            "observation/right_wrist_image": "observation.images.cam2",
+            # Physical Sharpa rig: cam2 is left wrist, cam1 is right wrist.
+            "observation/left_wrist_image": "observation.images.cam2",
+            "observation/right_wrist_image": "observation.images.cam1",
             "observation/state": "observation.state",
             "actions": "action",
             "prompt": "task",

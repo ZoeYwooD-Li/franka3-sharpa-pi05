@@ -39,8 +39,9 @@ def load_sample(path: Path, prompt: str) -> dict:
     return {
         "observation/state": np.asarray(table["observation.state"][0].as_py(), dtype=np.float32),
         "observation/image": image("observation.images.cam0"),
-        "observation/left_wrist_image": image("observation.images.cam1"),
-        "observation/right_wrist_image": image("observation.images.cam2"),
+        # Match the physical rig and LeRobotFr3SharpaDataConfig.
+        "observation/left_wrist_image": image("observation.images.cam2"),
+        "observation/right_wrist_image": image("observation.images.cam1"),
         "prompt": prompt,
     }
 
@@ -77,8 +78,8 @@ def live_observation(overlay: Path, prompt: str) -> dict:
     return {
         "observation/state": np.asarray(snapshot["state"], dtype=np.float32),
         "observation/image": decode("cam0"),
-        "observation/left_wrist_image": decode("cam1"),
-        "observation/right_wrist_image": decode("cam2"),
+        "observation/left_wrist_image": decode("cam2"),
+        "observation/right_wrist_image": decode("cam1"),
         "prompt": prompt,
         "_captured_monotonic_ns": snapshot["captured_monotonic_ns"],
     }
