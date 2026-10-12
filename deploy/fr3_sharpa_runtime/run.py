@@ -22,7 +22,8 @@ DEFAULT_PROMPT = (
     "Pick up a tomato with the right hand, move it to the center, "
     "let the left hand receive it, and place it in the bowl."
 )
-ROS_PROJECT = Path("/home/user/gello_upper_body_teleop/portable_deps/litchi_hardware")
+GELLO_REPO = Path(os.environ.get("SHARPA_GELLO_REPO", "/home/user/gello_upper_body_teleop"))
+ROS_PROJECT = GELLO_REPO / "portable_deps/litchi_hardware"
 
 
 def load_sample(path: Path, prompt: str) -> dict:
@@ -99,7 +100,7 @@ def ros_boundary(actions: np.ndarray | None, session_id: str, mode: str, overlay
             raise FileNotFoundError(setup)
         setup_prefix = f"source {shlex.quote(str(setup))}; "
     # Pixi resets PYTHONPATH during activation, so source the ROS overlay inside it.
-    gello = "/home/user/gello_upper_body_teleop"
+    gello = str(GELLO_REPO)
     core = f"{gello}/ros_ws/src/teleop_core"
     inner = f"{setup_prefix}export PYTHONPATH={shlex.quote(repo)}:{shlex.quote(gello)}:{shlex.quote(core)}:\"${{PYTHONPATH:-}}\"; exec {shlex.join(transport)}"
     command = ["pixi", "run", "--environment", "ros2", "bash", "-lc", inner]

@@ -54,16 +54,26 @@ def construct_messages(frame):
 
 def _require_parameter(node, remote: str, name: str, expected):
     import rclpy
-    from rclpy.parameter_client import AsyncParameterClient
+    from rcl_interfaces.srv import GetParameters
 
-    client = AsyncParameterClient(node, remote)
-    if not client.wait_for_service(timeout_sec=1.0):
-        raise RuntimeError(f"Cannot inspect {remote} parameter {name}")
-    future = client.get_parameters([name])
-    rclpy.spin_until_future_complete(node, future, timeout_sec=1.0)
-    if not future.done() or future.exception() is not None:
-        raise RuntimeError(f"Cannot inspect {remote} parameter {name}")
-    value = future.result().values[0]
+    # Pixi's rclpy omits parameter_client; query the same standard read-only
+    # service directly, retaining the existing deadline and required values.
+    client = node.create_client(GetParameters, f"/{remote.strip('/')}/get_parameters")
+    try:
+        if not client.wait_for_service(timeout_sec=1.0):
+            raise RuntimeError(f"Cannot inspect {remote} parameter {name}")
+        request = GetParameters.Request()
+        request.names = [name]
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=1.0)
+        if not future.done() or future.exception() is not None:
+            raise RuntimeError(f"Cannot inspect {remote} parameter {name}")
+        values = future.result().values
+        if len(values) != 1:
+            raise RuntimeError(f"Cannot inspect {remote} parameter {name}")
+        value = values[0]
+    finally:
+        node.destroy_client(client)
     actual = value.string_array_value if isinstance(expected, (list, tuple)) else value.bool_value
     if isinstance(expected, (list, tuple)):
         if not set(expected).issubset(set(actual)):
