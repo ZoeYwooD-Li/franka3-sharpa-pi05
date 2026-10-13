@@ -27,6 +27,7 @@ class Fr3SharpaInputs(transforms.DataTransformFn):
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
+        raw_masks = data.get("image_mask", {})
         result = {
             "state": np.asarray(data["observation/state"], dtype=np.float32),
             "image": {
@@ -34,7 +35,11 @@ class Fr3SharpaInputs(transforms.DataTransformFn):
                 "left_wrist_0_rgb": _image(data["observation/left_wrist_image"]),
                 "right_wrist_0_rgb": _image(data["observation/right_wrist_image"]),
             },
-            "image_mask": {"base_0_rgb": np.True_, "left_wrist_0_rgb": np.True_, "right_wrist_0_rgb": np.True_},
+            "image_mask": {
+                "base_0_rgb": bool(np.asarray(raw_masks.get("base_0_rgb", True)).max()),
+                "left_wrist_0_rgb": bool(np.asarray(raw_masks.get("left_wrist_0_rgb", True)).max()),
+                "right_wrist_0_rgb": bool(np.asarray(raw_masks.get("right_wrist_0_rgb", True)).max()),
+            },
         }
         if result["state"].shape[-1] != ACTION_DIM:
             raise ValueError(f"Expected measured 58D state, got {result['state'].shape}")

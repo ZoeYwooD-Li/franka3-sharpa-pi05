@@ -15,3 +15,4 @@ SHARPA_LEFT_TOPIC = "/teleop/sharpa/left/openpi_target"
 SHARPA_RIGHT_TOPIC = "/teleop/sharpa/right/openpi_target"
 STATE_DIM = ACTION_DIM
 CHUNK_LENGTH = ACTION_HORIZON
+EXECUTION_TRACE_DIR = Path("/home/user/.local/state/fr3_sharpa_runtime/execution_traces")

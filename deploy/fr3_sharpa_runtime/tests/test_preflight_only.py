@@ -104,6 +104,42 @@ def test_preflight_only_reports_excessive_live_initial_delta(readonly_probe):
     assert result["published"] is False
 
 
+def test_left_arm_delta_diagnostics_do_not_change_rejection(readonly_probe):
+    state, _, _ = readonly_probe
+    actions = np.tile(state, (50, 1))
+    actions[0, :7] = [0.01, -0.07, 0.03, 0.02, 0.005, 0.04, 0.06]
+    original = actions.copy()
+    result = inspect_live_preflight(ReadOnlyGraph(), actions, discovery_timeout_s=0)
+    rows = result["checks"]["action_valid"]["left_arm_first_target_deltas"]
+    assert result["checks"]["action_valid"]["status"] == "FAIL"
+    assert rows[0]["joint_index"] == 1
+    assert rows[0]["joint_name"] == "left_fr3v2_joint2"
+    assert rows[0]["delta_rad"] == pytest.approx(-0.07)
+    assert [r["abs_delta_rad"] for r in rows] == sorted([r["abs_delta_rad"] for r in rows], reverse=True)
+    np.testing.assert_array_equal(actions, original)
+
+
+def test_sharpa_delta_diagnostics_cover_both_hands_without_mutation(readonly_probe):
+    state, _, _ = readonly_probe
+    actions = np.tile(state, (50, 1))
+    actions[0, 7+18] = -0.46
+    actions[0, 36+4] = 0.3
+    original = actions.copy()
+    result = inspect_live_preflight(ReadOnlyGraph(), actions, discovery_timeout_s=0)
+    sides = result["checks"]["action_valid"]["sharpa_first_target_deltas"]
+    assert result["checks"]["action_valid"]["status"] == "FAIL"
+    assert len(sides["left"]) == len(sides["right"]) == 22
+    assert sides["left"][0]["joint_name"] == "left_pinky_MCP_FE"
+    assert sides["left"][0]["action_index"] == 25
+    assert sides["left"][0]["delta_rad"] == pytest.approx(-0.46)
+    assert sides["right"][0]["joint_name"] == "right_thumb_IP"
+    for rows in sides.values():
+        assert sorted(r["joint_index"] for r in rows) == list(range(22))
+        assert [r["abs_delta_rad"] for r in rows] == sorted([r["abs_delta_rad"] for r in rows], reverse=True)
+    np.testing.assert_array_equal(actions, original)
+    assert result["published"] is False
+
+
 def test_preflight_only_reports_incompatible_arm_message_type(readonly_probe):
     class WrongTypeGraph(ReadOnlyGraph):
         def get_topic_names_and_types(self):
@@ -121,6 +157,7 @@ def test_cli_missing_graph_does_not_infer_or_load_episode(monkeypatch, capsys):
 
     report = {"status": "FAIL", "readiness_pass": False, "checks": {}, "failures": {"gateway": "absent"},
               "published": False, "command_publishers_created": 0}
+    monkeypatch.setattr(run, "_start_observation_worker", lambda *args: None)
     monkeypatch.setattr(run, "ros_boundary", lambda *args: report)
     monkeypatch.setattr(run, "load_sample", lambda *args: pytest.fail("recorded samples are forbidden"))
     monkeypatch.setattr(run, "SharpaRuntime", lambda *args: pytest.fail("policy must wait for real observations"))

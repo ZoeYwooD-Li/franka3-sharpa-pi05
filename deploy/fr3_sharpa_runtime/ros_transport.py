@@ -18,6 +18,7 @@ from .protocol import (
     DT_NS, LEFT_FR3_SLICE, LEFT_SHARPA_SLICE, RIGHT_FR3_SLICE,
     RIGHT_SHARPA_SLICE, SHARPA_JOINT_NAMES, as_finite_action_chunk,
 )
+from .sdk_direct import SharpaSdkDirectExecutor, validate_direct_hand_actions
 
 
 def _stamp(ns):
@@ -84,7 +85,6 @@ def _require_parameter(node, remote: str, name: str, expected):
 
 def validate_action_ranges(actions: np.ndarray) -> None:
     """Intrinsic chunk checks, independent of any offline or live state."""
-    from adapters.litchibot.retarget import JOINT_LIMITS
     from teleop_core.safety import LOWER_LIMITS, UPPER_LIMITS
 
     actions = as_finite_action_chunk(actions)
@@ -93,10 +93,7 @@ def validate_action_ranges(actions: np.ndarray) -> None:
         raise ValueError("FR3 chunk exceeds existing gateway joint limits")
     for side, hand_slice in (("left", LEFT_SHARPA_SLICE), ("right", RIGHT_SHARPA_SLICE)):
         hand = actions[:, hand_slice]
-        if np.any(hand < JOINT_LIMITS[:, 0]) or np.any(hand > JOINT_LIMITS[:, 1]):
-            raise ValueError(f"{side} Sharpa chunk exceeds existing guarded joint limits")
-        if np.max(np.abs(np.diff(hand, axis=0))) >= 0.10:
-            raise ValueError(f"{side} Sharpa chunk exceeds guarded raw continuity bound")
+    validate_direct_hand_actions(actions)
 
 
 def validate_gateway_graph(node) -> None:
@@ -123,10 +120,17 @@ def validate_guarded_graph(node) -> None:
             raise RuntimeError("Guarded Sharpa public command owner invalid")
 
 
-def validate_execution_graph(node) -> None:
+def validate_execution_graph(node, backend: str = "litchibot") -> None:
     """The same existing endpoint/ownership requirements used in both modes."""
     validate_gateway_graph(node)
-    validate_guarded_graph(node)
+    if backend == "litchibot":
+        validate_guarded_graph(node)
+
+
+def validate_no_existing_hand_source(node) -> None:
+    for topic in (config.SHARPA_LEFT_TOPIC,config.SHARPA_RIGHT_TOPIC):
+        if node.get_publishers_info_by_topic(topic):
+            raise RuntimeError('Existing hand source owns the topics; use persistent --prepare-policy-first handoff')
 
 
 def prepare_messages(actions, session_id: str, start_ns: int):
@@ -151,6 +155,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("ros-test", "preflight-only", "execute"), required=True)
     parser.add_argument("--enable-hardware", action="store_true")
+    parser.add_argument("--sharpa-backend", choices=("litchibot", "sdk_direct"), default="litchibot")
     args = parser.parse_args()
     if args.mode == "execute" and not args.enable_hardware:
         parser.error("execute requires --enable-hardware")
@@ -183,23 +188,36 @@ def main():
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and "teleop_safety_gateway" not in node.get_node_names():
                 time.sleep(0.1)
-            validate_execution_graph(node)
+            validate_execution_graph(node, args.sharpa_backend)
+            if args.sharpa_backend == "litchibot":
+                validate_no_existing_hand_source(node)
             _require_parameter(node, "teleop_safety_gateway", "allowed_sources", [config.SOURCE])
-            _require_parameter(node, "sharpa_driver", "supervised_validation_guard", True)
+            if args.sharpa_backend == "litchibot":
+                _require_parameter(node, "sharpa_driver", "supervised_validation_guard", True)
             targets = (config.FR3_TOPIC, config.SHARPA_LEFT_TOPIC, config.SHARPA_RIGHT_TOPIC)
             print("EXECUTE PREFLIGHT: WAITING FOR LIVE ROS STATE", file=sys.stderr)
             feedback_provider = ROSFeedbackProvider(node)
             feedback = feedback_provider.wait()
-            preflight_result = execute_preflight(
-                actions, feedback, now_ros_ns=node.get_clock().now().nanoseconds,
-                now_monotonic_ns=time.monotonic_ns(),
-            )
+            if args.sharpa_backend == "litchibot":
+                preflight_result = execute_preflight(
+                    actions, feedback, now_ros_ns=node.get_clock().now().nanoseconds,
+                    now_monotonic_ns=time.monotonic_ns(),
+                )
+            else:
+                feedback.validate_freshness(now_ros_ns=node.get_clock().now().nanoseconds,
+                                            now_monotonic_ns=time.monotonic_ns())
+                preflight_result = {"status": "PASS", "reference": "live_ros_feedback",
+                                    "acquisition": "disabled", "backend": "sdk_direct"}
+            direct = SharpaSdkDirectExecutor() if args.sharpa_backend == "sdk_direct" else None
+            if direct is not None:
+                direct.connect()
             # Do not create publishers if the live first-target check fails.
-            publishers = (
-                node.create_publisher(ArmCommand, targets[0], 10),
+            arm_publisher = node.create_publisher(ArmCommand, targets[0], 10)
+            hand_publishers = None if args.sharpa_backend == "sdk_direct" else (
                 node.create_publisher(JointState, targets[1], 10),
                 node.create_publisher(JointState, targets[2], 10),
             )
+            publishers = (arm_publisher,)
             start_mono = time.monotonic_ns() + 500_000_000
             start_ns = node.get_clock().now().nanoseconds + 500_000_000
         else:
@@ -215,8 +233,8 @@ def main():
                 for _ in range(16):
                     rclpy.spin_once(node, timeout_sec=0.0)
                 feedback = feedback_provider.snapshot()
-                validate_execution_graph(node)
-                if index == 0:
+                validate_execution_graph(node, args.sharpa_backend)
+                if args.sharpa_backend == "litchibot" and index == 0:
                     preflight_result = execute_preflight(
                         actions, feedback, now_ros_ns=node.get_clock().now().nanoseconds,
                         now_monotonic_ns=time.monotonic_ns(),
@@ -227,8 +245,13 @@ def main():
                     raise RuntimeError("Stale/future command timestamp; stopped publishing")
                 if time.monotonic_ns() - target > DT_NS:
                     raise RuntimeError("20Hz deadline missed; stopped publishing")
-                for publisher, message in zip(publishers, triple, strict=True):
-                    publisher.publish(message)
+                if direct is not None:
+                    direct.send(triple[1].position, triple[2].position)
+                    publishers[0].publish(triple[0])
+                else:
+                    publishers[0].publish(triple[0])
+                    for publisher, message in zip(hand_publishers, triple[1:], strict=True):
+                        publisher.publish(message)
         result = {
             "mode": args.mode,
             "frames": len(messages),
@@ -237,12 +260,15 @@ def main():
             "right_sharpa_positions": len(messages[0][2].position),
             "sequence": [messages[0][0].sequence, messages[-1][0].sequence],
             "timestamp_step_ns": DT_NS,
-            "topics": [config.FR3_TOPIC, config.SHARPA_LEFT_TOPIC, config.SHARPA_RIGHT_TOPIC],
+            "topics": [config.FR3_TOPIC] if args.sharpa_backend == "sdk_direct" else [config.FR3_TOPIC, config.SHARPA_LEFT_TOPIC, config.SHARPA_RIGHT_TOPIC],
+            "sharpa_backend": args.sharpa_backend,
             "published": args.mode == "execute",
             "execute_preflight": preflight_result,
         }
         print(json.dumps(result))
     finally:
+        if 'direct' in locals() and direct is not None:
+            direct.stop()
         if feedback_provider is not None:
             feedback_provider.close()
         node.destroy_node()

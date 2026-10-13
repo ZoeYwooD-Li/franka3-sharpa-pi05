@@ -26,6 +26,7 @@ ARM_TOPICS = {"left": "/left/franka/joint_states", "right": "/right/franka/joint
 HAND_STATE_TOPICS = {"left": "/sharpa/left/joint_states", "right": "/sharpa/right/joint_states"}
 HAND_ACTION_TOPICS = {"left": "/sharpa/left/command", "right": "/sharpa/right/command"}
 CAMERA_TOPICS = {"cam0": "/cam0/color/image_raw", "cam1": "/cam1/color/image_raw", "cam2": "/cam2/color/image_raw"}
+CAMERA_SIZES = {"cam0": (400, 640), "cam1": (480, 640), "cam2": (480, 640)}
 REQUIRED = (*ARM_TOPICS.values(), *HAND_STATE_TOPICS.values(), *HAND_ACTION_TOPICS.values(), *CAMERA_TOPICS.values())
 
 
@@ -198,7 +199,8 @@ def read_bag(bag: Path):
     return samples, raw_counts, raw_first, raw_last, unsupported, topic_meta
 
 
-def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 80.0, causal: bool = False) -> dict:
+def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 80.0,
+            causal: bool = False, allow_camera_missing: bool = False) -> dict:
     samples, counts, first, last, unsupported, topic_meta = read_bag(bag)
     required_with_arm_action = (*REQUIRED, "/teleop/validated_arm_commands")
     missing_topics = [topic for topic in required_with_arm_action if not samples[topic]]
@@ -216,6 +218,8 @@ def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 
     stream_errors = {topic: [] for topic in required_with_arm_action}
     stream_selected_times = {topic: [] for topic in required_with_arm_action}
     dropped = []
+    image_missing = []
+    image_masks = []
     cursor = start
     while cursor <= end:
         chosen = {}
@@ -228,7 +232,9 @@ def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 
                 chosen[topic] = item
                 stream_errors[topic].append(item.time_ns - cursor)
                 stream_selected_times[topic].append(item.time_ns)
-        if failures:
+        hard_failures = [failure for failure in failures if failure["topic"] not in CAMERA_TOPICS.values()]
+        camera_failures = [failure for failure in failures if failure["topic"] in CAMERA_TOPICS.values()]
+        if hard_failures or (camera_failures and not allow_camera_missing):
             dropped.append({"time_ns": cursor, "missing": failures})
             cursor += step
             continue
@@ -256,11 +262,24 @@ def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 
             rows_state.append(join_state(arm_l, hand_l, arm_r, hand_r))
             rows_action.append(join_action(action_l, cmd_l, action_r, cmd_r))
             rows_time.append(cursor)
+            frame_masks = {}
             for name, cam_topic in CAMERA_TOPICS.items():
                 image_path = output / "images" / name
                 image_path.mkdir(exist_ok=True)
-                (image_path / f"{len(rows_time)-1:06d}.jpg").write_bytes(_image_bytes(chosen[cam_topic].value))
-                image_errors[name].append(chosen[cam_topic].time_ns - cursor)
+                sample = chosen.get(cam_topic)
+                if sample is None:
+                    height, width = CAMERA_SIZES[name]
+                    blank = np.zeros((height, width, 3), dtype=np.uint8)
+                    out = io.BytesIO()
+                    Image.fromarray(blank, mode="RGB").save(out, format="JPEG", quality=85, optimize=True)
+                    (image_path / f"{len(rows_time)-1:06d}.jpg").write_bytes(out.getvalue())
+                    frame_masks[name] = False
+                    image_missing.append({"time_ns": cursor, "camera": name})
+                else:
+                    (image_path / f"{len(rows_time)-1:06d}.jpg").write_bytes(_image_bytes(sample.value))
+                    image_errors[name].append(sample.time_ns - cursor)
+                    frame_masks[name] = True
+            image_masks.append(frame_masks)
             cursor += step
         except ValueError as exc:
             dropped.append({"time_ns": cursor, "error": str(exc)})
@@ -274,6 +293,8 @@ def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 
                                if t in first and last[t] > first[t] else None) for t in counts},
         "source_time_range_ns": [start, end], "candidate_frames": int(max(0, (end - start) // step + 1)),
         "converted_frames": len(rows_time), "dropped_frames": len(dropped), "drop_examples": dropped[:20],
+        "image_missing_frames": len(image_missing), "image_missing_examples": image_missing[:20],
+        "image_masks": image_masks if allow_camera_missing else None,
         "state_shape": [len(rows_state), ACTION_DIM], "action_shape": [len(rows_action), ACTION_DIM],
         "action_source": "/teleop/validated_arm_commands + /sharpa/{left,right}/command",
         "state_source": "measured FR3 and Sharpa joint_states",
@@ -323,7 +344,8 @@ def convert(bag: Path, output: Path, *, hz: float = 30.0, tolerance_ms: float = 
         "unit": "rad", "nan_inf_rejected": True, "status": "converted_intermediate",
     }
     np.savez_compressed(output / "episode.npz", time_ns=np.asarray(rows_time, dtype=np.int64),
-                        state=np.asarray(rows_state, dtype=np.float32), action=np.asarray(rows_action, dtype=np.float32))
+                        state=np.asarray(rows_state, dtype=np.float32), action=np.asarray(rows_action, dtype=np.float32),
+                        image_mask=np.asarray([[m[name] for name in CAMERA_TOPICS] for m in image_masks], dtype=np.bool_))
     (output / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
 
@@ -336,8 +358,11 @@ def main() -> None:
     parser.add_argument("--hz", type=float, default=30.0)
     parser.add_argument("--tolerance-ms", type=float, default=80.0)
     parser.add_argument("--causal", action="store_true", help="use only samples at or before each target time")
+    parser.add_argument("--allow-camera-missing", action="store_true",
+                        help="retain frames with missing RGB samples using masked black placeholders")
     args = parser.parse_args()
-    print(json.dumps(convert(args.bag, args.output, hz=args.hz, tolerance_ms=args.tolerance_ms, causal=args.causal), indent=2, ensure_ascii=False))
+    print(json.dumps(convert(args.bag, args.output, hz=args.hz, tolerance_ms=args.tolerance_ms,
+                             causal=args.causal, allow_camera_missing=args.allow_camera_missing), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

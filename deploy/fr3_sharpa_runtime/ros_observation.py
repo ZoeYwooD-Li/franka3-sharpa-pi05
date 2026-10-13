@@ -75,59 +75,134 @@ def stamp_ns(message) -> int:
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
-def snapshot(timeout_s: float = 5.0) -> dict:
-    import rclpy
-    from rclpy.qos import qos_profile_sensor_data
-    from sensor_msgs.msg import Image, JointState
+class ObservationProvider:
+    """One ROS context/node and subscriptions for the runtime lifetime."""
+    def __init__(self):
+        import rclpy
+        from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                               ReliabilityPolicy, qos_profile_sensor_data)
+        from sensor_msgs.msg import Image, JointState
+        self.rclpy = rclpy
+        rclpy.init()
+        self.node = rclpy.create_node("fr3_sharpa_observation")
+        self.latest = {}
+        self.subscriptions = []
+        self.closed = False
+        camera_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=5,
+                                reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.VOLATILE)
+        try:
+            for key, topic in TOPICS.items():
+                self.subscriptions.append(self.node.create_subscription(
+                    Image if key.startswith("cam") else JointState, topic,
+                    lambda message, selected=key: self.latest.__setitem__(selected, (message, time.monotonic_ns())),
+                    camera_qos if key.startswith("cam") else qos_profile_sensor_data))
+        except BaseException:
+            self.close()
+            raise
 
-    rclpy.init()
-    node = rclpy.create_node("fr3_sharpa_observation")
-    latest = {}
-    subscriptions = []
-    try:
-        for key, topic in TOPICS.items():
-            kind = Image if key.startswith("cam") else JointState
-            subscriptions.append(node.create_subscription(
-                kind, topic,
-                lambda message, selected=key: latest.__setitem__(selected, (message, time.monotonic_ns())),
-                qos_profile_sensor_data,
-            ))
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            try:
+                self.node.destroy_node()
+            finally:
+                self.rclpy.shutdown()
+
+    def snapshot(self, timeout_s: float = 5.0) -> dict:
+        if self.closed:
+            raise RuntimeError("Observation provider is closed")
+        rclpy, node, latest = self.rclpy, self.node, self.latest
         deadline = time.monotonic() + timeout_s
+        timing_failure = "No complete snapshot received"
         while time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.05)
-            if len(latest) == len(TOPICS):
+            rclpy.spin_once(node, timeout_sec=min(0.05, max(0.0, deadline - time.monotonic())))
+            if len(latest) != len(TOPICS):
+                continue
+            # Keep receiving real updates until the existing timing checks pass.
+            # No timestamps or frames are synthesized, shifted or duplicated.
+            now_mono = time.monotonic_ns()
+            now_ros = node.get_clock().now().nanoseconds
+            stamps = []
+            issues = []
+            for key, (message, received) in latest.items():
+                stamp = stamp_ns(message)
+                if not 0 <= now_mono - received <= MAX_AGE_NS:
+                    issues.append(f"Stale received observation: {key}")
+                if not 0 <= now_ros - stamp <= MAX_AGE_NS:
+                    issues.append(f"Stale/future ROS timestamp: {key} (age={(now_ros-stamp)/1e6:.3f} ms)")
+                stamps.append(stamp)
+            span = max(stamps) - min(stamps)
+            if span > MAX_SPREAD_NS:
+                issues.append(f"Multimodal observation timestamps are not synchronized (span={span/1e6:.3f} ms, limit={MAX_SPREAD_NS/1e6:.3f} ms)")
+            if not issues:
                 break
-        if len(latest) != len(TOPICS):
-            raise TimeoutError(f"Missing ROS observations: {sorted(set(TOPICS)-set(latest))}")
-        # Snapshot time is after receipt of all modalities: no future observations.
-        now_mono = time.monotonic_ns()
-        now_ros = node.get_clock().now().nanoseconds
-        stamps = []
-        for key, (message, received) in latest.items():
-            stamp = stamp_ns(message)
-            if not 0 <= now_mono - received <= MAX_AGE_NS:
-                raise ValueError(f"Stale received observation: {key}")
-            if not 0 <= now_ros - stamp <= MAX_AGE_NS:
-                raise ValueError(f"Stale/future ROS timestamp: {key}")
-            stamps.append(stamp)
-        if max(stamps) - min(stamps) > MAX_SPREAD_NS:
-            raise ValueError("Multimodal observation timestamps are not synchronized")
+            timing_failure = "; ".join(issues)
+        else:
+            missing = sorted(set(TOPICS) - set(latest))
+            if missing:
+                raise TimeoutError(f"Missing ROS observations: {missing}")
+            raise TimeoutError(f"No valid ROS observation snapshot within {timeout_s:g}s: {timing_failure}")
         state = sum((ordered_state(latest[f"{side}_{kind}"][0], side, kind == "hand")
                      for side, kind in (("left", "arm"), ("left", "hand"), ("right", "arm"), ("right", "hand"))), [])
-        return {
+        serialization_start = time.monotonic_ns()
+        result = {
             "state": state,
             "images": {key: rgb_image(latest[key][0]) for key in ("cam0", "cam1", "cam2")},
             "topic_stamp_ns": {key: stamp_ns(value[0]) for key, value in latest.items()},
             "captured_monotonic_ns": now_mono,
         }
+        result["timing"] = {"snapshot_ready_monotonic_ns": now_mono,
+                            "observation_encoding_ms": (time.monotonic_ns()-serialization_start)/1e6}
+        return result
+
+
+def snapshot(timeout_s: float = 5.0) -> dict:
+    """Standalone diagnostic compatibility; runtime uses ObservationProvider."""
+    provider = ObservationProvider()
+    try:
+        return provider.snapshot(timeout_s)
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        provider.close()
+
+
+def write_snapshot(result):
+    start = time.monotonic_ns()
+    payload = json.dumps(result, allow_nan=False)
+    timing = {"json_serialization_ms": (time.monotonic_ns()-start)/1e6,
+              "ros_payload_ready_monotonic_ns": time.monotonic_ns()}
+    print(payload[:-1] + ', "serialization_timing": ' + json.dumps(timing) + '}', flush=True)
+
+
+def persistent_main():
+    """Read-only request/reply worker; idle time continues to spin subscriptions."""
+    import select
+    provider = ObservationProvider()
+    try:
+        while True:
+            if not select.select([sys.stdin], [], [], 0)[0]:
+                provider.rclpy.spin_once(provider.node, timeout_sec=0.01)
+                continue
+            line = sys.stdin.readline()
+            if not line:
+                break
+            try:
+                request = json.loads(line)
+                if request.get("command") == "close":
+                    break
+                write_snapshot(provider.snapshot(float(request.get("timeout_s", 5.0))))
+            except Exception as error:
+                print(json.dumps({"error": str(error)}), flush=True)
+    finally:
+        provider.close()
 
 
 if __name__ == "__main__":
-    try:
-        print(json.dumps(snapshot(), allow_nan=False))
-    except Exception as error:
-        print(f"observation snapshot failed: {error}", file=sys.stderr)
-        raise
+    if "--persistent" in sys.argv:
+        persistent_main()
+    else:
+        try:
+            write_snapshot(snapshot())
+        except Exception as error:
+            print(f"observation snapshot failed: {error}", file=sys.stderr)
+            raise

@@ -77,9 +77,13 @@ def start(repo: Path, full_config: Path, state_dir: Path):
             time.sleep(2)
             if process.poll() is not None:
                 raise RuntimeError(f"Sharpa guarded startup exited {process.returncode}; see {state_dir / 'sharpa_guarded.log'}")
+        # Keep the hand input owner resident from acquisition through execute.
+        # This service only samples with permits OFF; no automatic ARM/motion.
+        subprocess.run([str(Path(__file__).resolve().parent/'start_transport.sh'),
+                        '--state-dir',str(state_dir)],env=env,check=True)
         subprocess.run(compose + ["ps", "-a"], env=env, check=True)
         print(f"Dependencies launched in background. Logs: {state_dir}")
-        print("ROS readiness is NOT assumed. Next: ./serve.sh, then ./runtime.sh --preflight-only")
+        print("ROS readiness is NOT assumed. Next: ./serve.sh, then ./runtime.sh --handoff-verify")
 
 
 def main():
@@ -104,6 +108,8 @@ def main():
             print(shlex.join(compose + ["up", "-d", service]))
         print("Existing Sharpa config/permit validation:", shlex.join(validate))
         print("Background:", shlex.join(guarded))
+        print('Acquisition/handoff:',shlex.join([str(Path(__file__).resolve().parent/'start_transport.sh'),
+                                               '--state-dir',str(args.state_dir)]))
         return
     try:
         if args.check_config:
@@ -115,7 +121,7 @@ def main():
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         if args.check_config:
             parser.exit(1, f"Existing guarded configuration: FAIL ({error}). No hardware services started.\n")
-        parser.exit(1, f"Hardware stack startup failed: {error}\nAlready started services are retained; inspect logs before retrying. No policy or target commands were sent.\n")
+        parser.exit(1, f"Hardware stack startup failed: {error}\nAlready started services are retained; inspect logs before retrying. No policy motion was requested.\n")
 
 
 if __name__ == "__main__":

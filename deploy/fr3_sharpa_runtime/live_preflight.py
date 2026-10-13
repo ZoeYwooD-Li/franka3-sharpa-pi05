@@ -90,6 +90,31 @@ def inspect_live_preflight(node, actions=None, session_id="preflight", *, discov
         if actions is None:
             checks["action_valid"] = {"status": "NOT_CHECKED", "reason": "waiting for real observation and policy inference"}
         else:
+            left_arm_deltas = []
+            sharpa_deltas = {"left": [], "right": []}
+            if feedback is not None:
+                from .protocol import FR3_COMMAND_NAMES, LEFT_SHARPA_NAMES, RIGHT_SHARPA_NAMES
+                import numpy as np
+                predicted = np.asarray(actions)
+                if predicted.shape == (50, 58) and np.isfinite(predicted).all():
+                    left_arm_deltas = sorted([
+                        {"joint_index": i, "joint_name": FR3_COMMAND_NAMES[i],
+                         "current_feedback_rad": float(feedback.state[i]),
+                         "predicted_first_action_rad": float(predicted[0, i]),
+                         "delta_rad": float(predicted[0, i]-feedback.state[i]),
+                         "abs_delta_rad": float(abs(predicted[0, i]-feedback.state[i]))}
+                        for i in range(7)
+                    ], key=lambda row: row["abs_delta_rad"], reverse=True)
+                    for side, offset, names in (("left", 7, LEFT_SHARPA_NAMES),
+                                                 ("right", 36, RIGHT_SHARPA_NAMES)):
+                        sharpa_deltas[side] = sorted([
+                            {"joint_index": i, "action_index": offset+i, "joint_name": name,
+                             "current_feedback_rad": float(feedback.state[offset+i]),
+                             "predicted_first_target_rad": float(predicted[0, offset+i]),
+                             "delta_rad": float(predicted[0, offset+i]-feedback.state[offset+i]),
+                             "abs_delta_rad": float(abs(predicted[0, offset+i]-feedback.state[offset+i]))}
+                            for i, name in enumerate(names)
+                        ], key=lambda row: row["abs_delta_rad"], reverse=True)
             try:
                 validate_action_ranges(actions)
                 if feedback is None:
@@ -107,6 +132,8 @@ def inspect_live_preflight(node, actions=None, session_id="preflight", *, discov
                                           "timestamp_step_ns": 50_000_000, "unit": chunk.unit}
             except Exception as error:
                 checks["action_valid"] = {"status": "FAIL", "reason": str(error)}
+            checks["action_valid"]["left_arm_first_target_deltas"] = left_arm_deltas
+            checks["action_valid"]["sharpa_first_target_deltas"] = sharpa_deltas
 
         readiness_pass = all(checks[key]["status"] == "PASS" for key in ("gateway", "guarded_runtime", "camera_interfaces", "feedback"))
         failed = {key: value for key, value in checks.items() if value["status"] == "FAIL"}

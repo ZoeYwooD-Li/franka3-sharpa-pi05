@@ -10,6 +10,7 @@ from openpi.shared import normalize
 from openpi.training import config as training_config
 
 from . import config
+from .timing import TimedPolicy, timed_server_class
 
 
 def main() -> None:
@@ -30,7 +31,7 @@ def main() -> None:
         "action_horizon": config.ACTION_HORIZON,
         "action_hz": config.ACTION_HZ,
     }
-    WebsocketPolicyServer(policy, host="127.0.0.1", port=args.port, metadata=metadata).serve_forever()
+    timed_server_class(WebsocketPolicyServer)(TimedPolicy(policy), host="127.0.0.1", port=args.port, metadata=metadata).serve_forever()
 
 
 if __name__ == "__main__":

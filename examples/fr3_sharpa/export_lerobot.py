@@ -19,7 +19,7 @@ CAMERAS = ("cam0", "cam1", "cam2")
 CAMERA_SIZES = {"cam0": (400, 640, 3), "cam1": (480, 640, 3), "cam2": (480, 640, 3)}
 
 
-def _read_source(source: Path) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray]:
+def _read_source(source: Path) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     report_path = source / "report.json"
     if not report_path.is_file():
         raise FileNotFoundError(report_path)
@@ -30,8 +30,11 @@ def _read_source(source: Path) -> tuple[dict[str, Any], np.ndarray, np.ndarray, 
         raise ValueError(f"{source}: contains {report['dropped_frames']} dropped frames")
     data = np.load(source / "episode.npz")
     state, action, times = data["state"], data["action"], data["time_ns"]
+    image_mask = data["image_mask"] if "image_mask" in data else np.ones((len(state), 3), dtype=np.bool_)
     if state.shape != action.shape or state.ndim != 2 or state.shape[1:] != (ACTION_DIM,) or len(times) != len(state):
         raise ValueError(f"{source}: invalid intermediate shapes state={state.shape}, action={action.shape}, time={times.shape}")
+    if image_mask.shape != (len(state), 3):
+        raise ValueError(f"{source}: invalid image_mask shape {image_mask.shape}")
     if len(times) < 2 or not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
         raise ValueError(f"{source}: timestamps must be finite and strictly increasing")
     fps = float(report.get("fps", 0))
@@ -51,7 +54,7 @@ def _read_source(source: Path) -> tuple[dict[str, Any], np.ndarray, np.ndarray, 
             raise ValueError(f"{source}: {camera} missing {len(missing)} image frames")
     report.setdefault("export_validation", {})["source_timestamp_max_error_s"] = max_dt_error
     report["export_validation"]["source_duration_s"] = float((times[-1] - times[0]) / 1e9)
-    return report, state.astype(np.float32), action.astype(np.float32), times.astype(np.int64)
+    return report, state.astype(np.float32), action.astype(np.float32), times.astype(np.int64), image_mask.astype(np.bool_)
 
 
 def _features() -> dict[str, dict[str, Any]]:
@@ -62,6 +65,10 @@ def _features() -> dict[str, dict[str, Any]]:
     for camera, size in CAMERA_SIZES.items():
         features[f"observation.images.{camera}"] = {
             "dtype": "video", "shape": size, "names": ["height", "width", "channel"]
+        }
+    for camera in CAMERAS:
+        features[f"observation.image_mask.{camera}"] = {
+            "dtype": "image", "shape": (3, 1, 1), "names": ["channel", "height", "width"]
         }
     return features
 
@@ -80,7 +87,7 @@ def _interval_indices(times: np.ndarray, interval: tuple[float, float] | None) -
 
 
 def _add_segment(dataset: LeRobotDataset, source: Path, state: np.ndarray, action: np.ndarray,
-                 indices: np.ndarray, task: str) -> dict[str, Any]:
+                 image_mask: np.ndarray, indices: np.ndarray, task: str) -> dict[str, Any]:
     first, last = int(indices[0]), int(indices[-1])
     segment_state = state[indices]
     segment_action = action[indices]
@@ -93,6 +100,8 @@ def _add_segment(dataset: LeRobotDataset, source: Path, state: np.ndarray, actio
         for camera in CAMERAS:
             path = source / "images" / camera / f"{original_index:06d}.jpg"
             frame[f"observation.images.{camera}"] = np.asarray(Image.open(path).convert("RGB"))
+            valid = 255 if bool(image_mask[original_index, CAMERAS.index(camera)]) else 0
+            frame[f"observation.image_mask.{camera}"] = np.full((3, 1, 1), valid, dtype=np.uint8)
         dataset.add_frame(frame)
     dataset.save_episode()
     return {
@@ -122,7 +131,7 @@ def export_sources(sources: Iterable[Path], repo_id: str, output: Path, *, task:
     episodes = []
     source_reports = []
     expected_states = []
-    for source, report, state, action, times in loaded:
+    for source, report, state, action, times, image_mask in loaded:
         source_reports.append({"source": str(source), "bag": report.get("bag"), "fps": report["fps"],
                                "causal": report.get("causal"), "task": task})
         source_intervals = (intervals or {}).get(source.name, [])
@@ -130,7 +139,7 @@ def export_sources(sources: Iterable[Path], repo_id: str, output: Path, *, task:
             source_intervals = [None]
         for interval in source_intervals:
             indices = _interval_indices(times, interval)
-            episode = _add_segment(dataset, source, state, action, indices, task)
+            episode = _add_segment(dataset, source, state, action, image_mask, indices, task)
             expected_states.append(state[indices])
             episode["crop_interval_s"] = list(interval) if interval is not None else None
             boundary_checks = []
@@ -177,7 +186,9 @@ def verify_export(root: Path, *, expected_fps: float, expected_frames: np.ndarra
         rows = np.flatnonzero(episode_indices == episode_index)
         timestamp_errors.append(float(np.max(np.abs(timestamps[rows] - np.arange(len(rows)) / expected_fps))))
     timestamp_error = max(timestamp_errors, default=math.inf)
-    if timestamp_error > 2e-6:
+    # LeRobot stores timestamps as float32; at 30 Hz the representational
+    # error can reach a few microseconds for longer episodes.
+    if timestamp_error > 1e-5:
         failures.append(f"parquet timestamp max error {timestamp_error:.3g}s")
     episode_frame_counts = {int(e): int(np.sum(episode_indices == e)) for e in sorted(set(episode_indices.tolist()))}
     episode_durations = {str(e): float((count - 1) / expected_fps) for e, count in episode_frame_counts.items()}

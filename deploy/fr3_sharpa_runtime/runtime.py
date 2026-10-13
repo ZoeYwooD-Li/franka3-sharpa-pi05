@@ -49,13 +49,20 @@ class SharpaRuntime:
         self.adapter = SharpaActionAdapter()
 
     def infer_chunk(self, observation: dict):
+        entered_ns = time.monotonic_ns()
         # Import here so the pure adapter remains importable in Pixi ROS2.
         from openpi_client import msgpack_numpy
         from websockets.sync.client import connect
 
+        timing = {"infer_chunk_entered_monotonic_ns": entered_ns,
+                  "client_imports_ready_monotonic_ns": time.monotonic_ns()}
+        start = time.monotonic_ns()
         clean = validate_observation(observation)
+        timing["client_preprocessing_ms"] = (time.monotonic_ns()-start)/1e6
+        timing["websocket_connect_start_monotonic_ns"] = time.monotonic_ns()
         with connect(self.policy_url, compression=None, max_size=None, open_timeout=10, close_timeout=5) as ws:
             metadata = msgpack_numpy.unpackb(ws.recv(timeout=10))
+            timing["websocket_metadata_ready_monotonic_ns"] = time.monotonic_ns()
             if metadata.get("config_name") != config.CONFIG_NAME:
                 raise ValueError("Policy server config does not match Sharpa runtime")
             if metadata.get("checkpoint") != str(config.CHECKPOINT):
@@ -68,15 +75,30 @@ class SharpaRuntime:
                 or metadata.get("action_hz") != config.ACTION_HZ
             ):
                 raise ValueError("Policy server action contract does not match Sharpa runtime")
-            ws.send(msgpack_numpy.Packer().pack(clean))
+            start = time.monotonic_ns()
+            payload = msgpack_numpy.Packer().pack(clean)
+            timing["observation_msgpack_ms"] = (time.monotonic_ns()-start)/1e6
+            timing["policy_request_send_monotonic_ns"] = time.monotonic_ns()
+            ws.send(payload)
+            timing["policy_request_sent_monotonic_ns"] = time.monotonic_ns()
             response = ws.recv(timeout=120)
+            timing["response_receive_monotonic_ns"] = time.monotonic_ns()
         if isinstance(response, str):
             raise RuntimeError(f"Policy server error: {response}")
+        start = time.monotonic_ns()
         result = msgpack_numpy.unpackb(response)
+        timing["response_decode_ms"] = (time.monotonic_ns()-start)/1e6
+        timing["server"] = result.get("diagnostic_timing", {})
+        timing["existing_server_timing"] = result.get("server_timing", {})
+        timing["existing_policy_timing"] = result.get("policy_timing", {})
         actions = as_finite_action_chunk(result["actions"])
         # Fresh session for this single chunk; this version never splices chunks.
         session_id = f"openpi-{uuid.uuid4().hex}"
+        start = time.monotonic_ns()
         chunk = self.adapter.adapt_chunk(
             actions, start_timestamp_ns=time.time_ns(), session_id=session_id, source=config.SOURCE
         )
+        timing["action_adapter_ms"] = (time.monotonic_ns()-start)/1e6
+        timing["action_adapter_end_monotonic_ns"] = time.monotonic_ns()
+        self.last_timing = timing
         return metadata, actions, chunk

@@ -1,0 +1,90 @@
+{
+  "pose_name": "harvest_tomato_initial_pose",
+  "unit": "rad",
+  "representation": "absolute_joint_position",
+  "backend": "guarded_motion",
+  "groups": {
+    "left_fr3": {
+      "joint_names": [
+        "left_fr3v2_joint1",
+        "left_fr3v2_joint2",
+        "left_fr3v2_joint3",
+        "left_fr3v2_joint4",
+        "left_fr3v2_joint5",
+        "left_fr3v2_joint6",
+        "left_fr3v2_joint7"
+      ],
+      "positions": null
+    },
+    "left_sharpa": {
+      "joint_names": [
+        "left_thumb_CMC_FE",
+        "left_thumb_CMC_AA",
+        "left_thumb_MCP_FE",
+        "left_thumb_MCP_AA",
+        "left_thumb_IP",
+        "left_index_MCP_FE",
+        "left_index_MCP_AA",
+        "left_index_PIP",
+        "left_index_DIP",
+        "left_middle_MCP_FE",
+        "left_middle_MCP_AA",
+        "left_middle_PIP",
+        "left_middle_DIP",
+        "left_ring_MCP_FE",
+        "left_ring_MCP_AA",
+        "left_ring_PIP",
+        "left_ring_DIP",
+        "left_pinky_CMC",
+        "left_pinky_MCP_FE",
+        "left_pinky_MCP_AA",
+        "left_pinky_PIP",
+        "left_pinky_DIP"
+      ],
+      "positions": null
+    },
+    "right_fr3": {
+      "joint_names": [
+        "right_fr3v2_joint1",
+        "right_fr3v2_joint2",
+        "right_fr3v2_joint3",
+        "right_fr3v2_joint4",
+        "right_fr3v2_joint5",
+        "right_fr3v2_joint6",
+        "right_fr3v2_joint7"
+      ],
+      "positions": null
+    },
+    "right_sharpa": {
+      "joint_names": [
+        "right_thumb_CMC_FE",
+        "right_thumb_CMC_AA",
+        "right_thumb_MCP_FE",
+        "right_thumb_MCP_AA",
+        "right_thumb_IP",
+        "right_index_MCP_FE",
+        "right_index_MCP_AA",
+        "right_index_PIP",
+        "right_index_DIP",
+        "right_middle_MCP_FE",
+        "right_middle_MCP_AA",
+        "right_middle_PIP",
+        "right_middle_DIP",
+        "right_ring_MCP_FE",
+        "right_ring_MCP_AA",
+        "right_ring_PIP",
+        "right_ring_DIP",
+        "right_pinky_CMC",
+        "right_pinky_MCP_FE",
+        "right_pinky_MCP_AA",
+        "right_pinky_PIP",
+        "right_pinky_DIP"
+      ],
+      "positions": null
+    }
+  },
+  "tolerance_rad": 0.01,
+  "stability_delta_rad": 0.005,
+  "stable_duration_s": 0.5,
+  "timeout_s": 30
+}
