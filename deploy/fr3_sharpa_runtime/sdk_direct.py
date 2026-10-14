@@ -21,6 +21,21 @@ SDK_SLEW_LIMIT_RAD = 0.10
 WATCHDOG_TIMEOUT_S = 0.25
 
 
+def scaled_action_frames(actions: np.ndarray, speed_scale: float):
+    """Time-stretch an absolute chunk while retaining 20 Hz output."""
+    chunk = as_finite_action_chunk(actions)
+    if not np.isfinite(speed_scale) or not 0.0 < speed_scale <= 1.0:
+        raise ValueError("execute speed scale must be finite and in (0, 1]")
+    steps = max(1, int(round(1.0 / float(speed_scale))))
+    previous = chunk[0].copy()
+    yield previous
+    for target in chunk[1:]:
+        delta = target - previous
+        for index in range(1, steps + 1):
+            yield previous + delta * (index / steps)
+        previous = target.copy()
+
+
 def validate_direct_hand_actions(actions: np.ndarray) -> None:
     """Validate finite positions, native Wave limits and per-frame slew."""
     chunk = as_finite_action_chunk(actions)
@@ -123,11 +138,26 @@ class SharpaSdkDirectExecutor:
             raise RuntimeError("Sharpa SDK backend is not connected")
         self._last_send = None
 
-    def stop(self) -> None:
-        for hand in (self.left, self.right):
-            if hand is not None:
-                try:
-                    hand.stop()
-                finally:
-                    hand.disconnect()
+    def stop(self) -> list[str]:
+        """Best-effort stop and disconnect for both hands.
+
+        A transport failure on one hand must not prevent the other hand from
+        receiving its stop/disable attempt.  Errors are returned so callers
+        can surface a cleanup warning without aborting the already completed
+        motion result.
+        """
+        errors = []
+        for side, hand in (("left", self.left), ("right", self.right)):
+            if hand is None:
+                continue
+            try:
+                hand.stop()
+            except Exception as error:
+                errors.append(f"{side}.stop: {error}")
+            try:
+                hand.disconnect()
+            except Exception as error:
+                errors.append(f"{side}.disconnect: {error}")
         self.left = self.right = None
+        self._last_send = None
+        return errors

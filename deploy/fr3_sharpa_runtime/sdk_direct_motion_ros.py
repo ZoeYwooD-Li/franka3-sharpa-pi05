@@ -25,13 +25,14 @@ from .policy_prepare import SlowApproach, target_chunk
 from .protocol import (DT_NS, LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE,
                        as_finite_action_chunk)
 from .ros_transport import construct_messages, validate_action_ranges, validate_gateway_graph
-from .sdk_direct import SharpaSdkDirectExecutor
+from .sdk_direct import SharpaSdkDirectExecutor, scaled_action_frames
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enable-hardware", action="store_true", required=True)
     parser.add_argument("--speed-rad-s", type=float, default=0.03)
+    parser.add_argument("--execute-speed-scale", type=float, default=1.0)
     args = parser.parse_args()
 
     import rclpy
@@ -182,19 +183,28 @@ def main() -> None:
             elif operation == "chunk":
                 actions = as_finite_action_chunk(np.asarray(request["actions"], dtype=np.float32))
                 validate_action_ranges(actions)
+                speed_scale = float(request.get("execute_speed_scale", args.execute_speed_scale))
+                if not np.isfinite(speed_scale) or not 0.0 < speed_scale <= 1.0:
+                    raise ValueError("execute_speed_scale must be finite and in (0, 1]")
                 # A policy inference/observation boundary may exceed the
                 # hand driver's 0.25 s continuous-stream watchdog.  This is
                 # an explicit new command phase; continuity protection resumes
                 # from the first frame below and remains active within it.
                 executor.resume_stream()
-                for frame in actions:
+                emitted_frames = 0
+                for frame in scaled_action_frames(actions, speed_scale):
                     current = fresh_feedback()
                     del current
                     executor.send(frame[LEFT_SHARPA_SLICE], frame[RIGHT_SHARPA_SLICE])
                     publish_frame(frame)
                     time.sleep(DT_NS / 1e9)
+                    emitted_frames += 1
                 print(json.dumps({"status": "PASS", "operation": "chunk", "published": True,
-                                  "frames": len(actions)}), file=protocol, flush=True)
+                                  "frames": emitted_frames, "policy_frames": len(actions),
+                                  "execute_speed_scale": speed_scale,
+                                  "completed_ros_ns": node.get_clock().now().nanoseconds,
+                                  "completed_monotonic_ns": time.monotonic_ns()}),
+                      file=protocol, flush=True)
             elif operation == "close":
                 break
             else:
@@ -216,7 +226,10 @@ def main() -> None:
             ros_spin_thread.join(timeout=1.0)
         if feedback_thread is not None:
             feedback_thread.join(timeout=1.0)
-        executor.stop()
+        stop_errors = executor.stop()
+        if stop_errors:
+            print("WARNING: Sharpa cleanup could not be fully confirmed: "
+                  + "; ".join(stop_errors), file=sys.stderr)
         feedback.close()
         node.destroy_node()
         rclpy.shutdown()

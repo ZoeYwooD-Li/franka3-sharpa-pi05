@@ -210,6 +210,7 @@ def execute_policy_prepare(args):
         result = prepare_and_run_chunks(cached_first_infer,
             lambda completed: observation_after_completion(args, completed), worker, initial,
             num_chunks=args.num_chunks, speed_rad_s=args.prepare_speed_rad_s,
+            execute_speed_scale=args.execute_speed_scale,
             trace_writer=trace_writer)
         if trace_writer is not None:
             result["execution_traces"] = trace_writer.paths
@@ -346,6 +347,8 @@ def main() -> None:
                         help="Execute-only: slowly approach initial policy first target through existing guards, then re-infer")
     parser.add_argument("--prepare-speed-rad-s", type=float, default=0.03,
                         help="Joint-space approach speed (rad/s); native guarded limits remain authoritative")
+    parser.add_argument("--execute-speed-scale", type=float, default=1.0,
+                        help="sdk_direct chunk time scale in (0,1]; 0.1 emits ten interpolation steps per policy step")
     parser.add_argument("--num-chunks", type=int, default=1,
                         help="Finite number of full 50-frame chunks after policy-first prepare")
     parser.add_argument("--policy-url", default=config.POLICY_URL)
@@ -379,8 +382,11 @@ def main() -> None:
         parser.error("offline modes require --episode-parquet")
     if args.prepare_policy_first and (args.mode != 'execute' or args.prepare_config is not None):
         parser.error("--prepare-policy-first requires execute and cannot be mixed with --prepare-config")
-    if args.num_chunks < 1 or not np.isfinite(args.prepare_speed_rad_s) or args.prepare_speed_rad_s <= 0:
-        parser.error("Positive finite prepare speed and positive num-chunks required")
+    if (args.num_chunks < 1 or not np.isfinite(args.prepare_speed_rad_s)
+            or args.prepare_speed_rad_s <= 0
+            or not np.isfinite(args.execute_speed_scale)
+            or not 0 < args.execute_speed_scale <= 1):
+        parser.error("Positive finite prepare speed, execute speed scale in (0,1], and positive num-chunks required")
     if args.num_chunks != 1 and not args.prepare_policy_first:
         parser.error("Multiple chunks require the persistent --prepare-policy-first path")
     if args.mode != "dry-run" and args.ros_overlay is None:

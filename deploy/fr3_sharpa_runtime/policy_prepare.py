@@ -7,7 +7,7 @@ from .feedback import LiveFeedback
 from .preflight import execute_preflight
 from .protocol import (
     DT_NS, LEFT_FR3_SLICE, LEFT_SHARPA_SLICE, RIGHT_FR3_SLICE,
-    RIGHT_SHARPA_SLICE, as_finite_action_chunk,
+    RIGHT_SHARPA_SLICE, SHARPA_JOINT_NAMES, as_finite_action_chunk,
 )
 
 
@@ -75,11 +75,20 @@ class SlowApproach:
                 for name, part in ERROR_GROUPS.items()
             }
             remaining = max(errors.values())
+            left_hand_errors = self.last_feedback[LEFT_SHARPA_SLICE] - self.target[LEFT_SHARPA_SLICE]
+            worst_left = int(np.argmax(np.abs(left_hand_errors)))
+            left_detail = {
+                "joint": SHARPA_JOINT_NAMES[worst_left],
+                "index": worst_left,
+                "target_rad": float(self.target[LEFT_SHARPA_SLICE][worst_left]),
+                "feedback_rad": float(self.last_feedback[LEFT_SHARPA_SLICE][worst_left]),
+                "error_rad": float(left_hand_errors[worst_left]),
+            }
             raise TimeoutError(
                 "Prepare did not reach and settle at policy first target; "
                 f"chunks blocked (remaining_error_rad={remaining:.6f}, "
                 f"timeout_s={self.effective_timeout_s:.1f}, "
-                f"error_by_group={errors})"
+                f"error_by_group={errors}, worst_left_sharpa={left_detail})"
             )
         # A straight joint-space trajectory; never alter the policy target.
         # Progress only one nominal 20Hz interval even if scheduling is delayed.
@@ -109,7 +118,8 @@ class SlowApproach:
 
 
 def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
-                           *, num_chunks=1, speed_rad_s=0.03, trace_writer=None):
+                           *, num_chunks=1, speed_rad_s=0.03,
+                           execute_speed_scale=1.0, trace_writer=None):
     """Old prediction is used only as a prepare target, never as the first chunk."""
     if num_chunks < 1:
         raise ValueError("num_chunks must be positive")
@@ -140,7 +150,8 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                 observation_before=observation, actions=actions,
                 adapted_chunk=adapted_chunk)
         command_started = time.monotonic()
-        completed = transport.request({"operation": "chunk", "actions": actions.tolist()})
+        completed = transport.request({"operation": "chunk", "actions": actions.tolist(),
+                                       "execute_speed_scale": execute_speed_scale})
         if completed.get('status') != 'PASS':
             raise RuntimeError("Guarded chunk failed; further inference stopped")
         command_duration = time.monotonic() - command_started

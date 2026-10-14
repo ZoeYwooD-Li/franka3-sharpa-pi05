@@ -13,6 +13,7 @@
   --sharpa-backend sdk_direct \
   --prepare-policy-first \
   --prepare-speed-rad-s 0.03 \
+  --execute-speed-scale 0.1 \
   --num-chunks 1
 ```
 

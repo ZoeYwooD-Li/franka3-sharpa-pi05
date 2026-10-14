@@ -14,6 +14,14 @@ litchi_hardware.SharpaSdkHand
 Sharpa Wave SDK
 ```
 
+当前部署 checkpoint：
+
+```text
+/home/user/checkpoints/new-train/pi05_fr3_sharpa_tier_a_b1_20hz/sharpa_camfix_a70_b130_20hz_30k_wandb/29999
+```
+
+该训练版本使用已纠正的腕部相机映射：左腕 `cam2`，右腕 `cam1`。部署 norm_stats 仍为同一 20Hz、58D 数据集的统计文件。
+
 旧 `litchibot` guarded runtime、permit、handoff 和 acquisition 代码保留为 legacy fallback，当前 sdk_direct 执行不调用它们。
 
 ## 文件职责
@@ -75,10 +83,13 @@ cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
   --sharpa-backend sdk_direct \
   --prepare-policy-first \
   --prepare-speed-rad-s 0.03 \
+  --execute-speed-scale 0.1 \
   --num-chunks 1
 ```
 
 执行链路：实时 FR3/Sharpa/camera observation → policy 首帧 target → 低速 prepare → 重新采集 → policy inference → 50×58 action chunk → FR3 Safety Gateway + Sharpa SDK direct。
+
+`--execute-speed-scale 0.1` 会在相邻 policy target 之间插入 10 倍时间插值，保持 20Hz 输出；一个 50 帧 chunk 约 25 秒。默认值 `1.0` 保持原始速度。
 
 不要同时启动旧 `sharpa_driver` 和 `sdk_direct`；两者不能共同拥有 Sharpa 设备。
 
