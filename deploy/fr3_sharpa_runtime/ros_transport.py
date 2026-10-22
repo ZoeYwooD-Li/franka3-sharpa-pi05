@@ -83,7 +83,7 @@ def _require_parameter(node, remote: str, name: str, expected):
         raise RuntimeError(f"{remote} parameter {name} is not enabled")
 
 
-def validate_action_ranges(actions: np.ndarray) -> None:
+def validate_action_ranges(actions: np.ndarray, *, check_slew: bool = True) -> None:
     """Intrinsic chunk checks, independent of any offline or live state."""
     from teleop_core.safety import LOWER_LIMITS, UPPER_LIMITS
 
@@ -91,9 +91,7 @@ def validate_action_ranges(actions: np.ndarray) -> None:
     arm = np.concatenate((actions[:, LEFT_FR3_SLICE], actions[:, RIGHT_FR3_SLICE]), axis=1)
     if np.any(arm < LOWER_LIMITS) or np.any(arm > UPPER_LIMITS):
         raise ValueError("FR3 chunk exceeds existing gateway joint limits")
-    for side, hand_slice in (("left", LEFT_SHARPA_SLICE), ("right", RIGHT_SHARPA_SLICE)):
-        hand = actions[:, hand_slice]
-    validate_direct_hand_actions(actions)
+    validate_direct_hand_actions(actions, check_slew=check_slew)
 
 
 def validate_gateway_graph(node) -> None:

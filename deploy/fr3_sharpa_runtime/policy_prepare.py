@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import numpy as np
 import time
+import sys
 
 from .feedback import LiveFeedback
 from .preflight import execute_preflight
@@ -120,52 +121,91 @@ class SlowApproach:
 def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                            *, num_chunks=1, speed_rad_s=0.03,
                            execute_speed_scale=1.0, trace_writer=None):
-    """Old prediction is used only as a prepare target, never as the first chunk."""
-    if num_chunks < 1:
-        raise ValueError("num_chunks must be positive")
-    metadata, initial_actions, _ = infer(initial_observation)
-    initial_actions = as_finite_action_chunk(initial_actions)
-    prepared = transport.request({"operation": "prepare", "target": initial_actions[0].tolist(),
-                                  "speed_rad_s": speed_rad_s})
-    if prepared.get('status') != 'PASS':
-        raise RuntimeError("Prepare did not pass; chunks blocked")
+    """Prepare once, then reobserve/infer/execute; zero chunks means until Ctrl-C.
+
+    Keep the complete action horizon. The backend bridges to each newly
+    predicted first target; it never reuses the prediction made before prepare.
+    """
+    if type(num_chunks) is not int or num_chunks < 0:
+        raise ValueError("num_chunks must be a nonnegative integer (0 = continuous)")
     results = []
-    completed = prepared
-    next_observation = None
-    for chunk_index in range(num_chunks):
-        if trace_writer is None:
-            # Preserve the original control flow for legacy and untraced
-            # callers: acquire exactly once before each chunk inference.
-            observation = acquire_after(completed)
-        elif next_observation is None:
-            observation = acquire_after(completed)
-        else:
-            observation = next_observation
+    count = 0
+    prepared = None
+    trace_path = None
+    stage = "initial_inference"
+    metadata = {}
+
+    def event(name, **fields):
+        nonlocal stage
+        stage = name
+        print(f"[chunk-runtime] {name} chunk={count + 1}", file=sys.stderr, flush=True)
+        if trace_writer is not None:
+            trace_writer.event(name, chunk_index=count, **fields)
+
+    try:
+        event("initial_inference")
+        metadata, initial_actions, _ = infer(initial_observation)
+        initial_actions = as_finite_action_chunk(initial_actions)
+        event("prepare", target=initial_actions[0].tolist(), speed_rad_s=speed_rad_s)
+        prepared = transport.request({"operation": "prepare", "target": initial_actions[0].tolist(),
+                                      "speed_rad_s": speed_rad_s})
+        if prepared.get("status") != "PASS":
+            raise RuntimeError("Prepare did not pass; chunks blocked")
+        event("prepare_complete", report=prepared)
+        completed = prepared
+        next_observation = None
+        while num_chunks == 0 or count < num_chunks:
+            trace_path = None
+            event("observation")
+            observation = acquire_after(completed) if next_observation is None else next_observation
             next_observation = None
-        metadata, actions, adapted_chunk = infer(observation)
-        trace_path = None
+            event("inference")
+            metadata, actions, adapted_chunk = infer(observation)
+            actions = as_finite_action_chunk(actions)
+            if trace_writer is not None:
+                trace_path = trace_writer.begin_chunk(
+                    chunk_index=count, metadata=metadata,
+                    observation_before=observation, actions=actions,
+                    adapted_chunk=adapted_chunk)
+            event("execute")
+            command_started = time.monotonic()
+            completed = transport.request({"operation": "chunk", "actions": actions.tolist(),
+                                           "execute_speed_scale": execute_speed_scale,
+                                           "approach_speed_rad_s": speed_rad_s})
+            if completed.get("status") != "PASS":
+                raise RuntimeError("Chunk failed; further inference stopped")
+            command_duration = time.monotonic() - command_started
+            if trace_writer is not None:
+                # Mark transmission complete even if the following sensor
+                # acquisition fails. That distinction matters in a postmortem.
+                trace_writer.finish_chunk(trace_path, observation_after=None,
+                    command_duration_s=command_duration,
+                    end_to_end_duration_s=time.monotonic()-command_started,
+                    execution_report=completed)
+            count += 1
+            # In continuous mode records are on disk, not an unbounded RAM list.
+            if num_chunks:
+                results.append(completed)
+            event("chunk_complete", report=completed)
+            if trace_writer is not None:
+                event("post_chunk_observation")
+                next_observation = acquire_after(completed)
+                trace_writer.finish_chunk(trace_path, observation_after=next_observation,
+                    command_duration_s=command_duration,
+                    end_to_end_duration_s=time.monotonic()-command_started,
+                    execution_report=completed)
+        report = {"mode": "execute", "status": "COMPLETE", "prepare": prepared, "chunks": results,
+                  "checkpoint": metadata["checkpoint"], "norm_stats": metadata["norm_stats"],
+                  "action_shape": [50, 58], "action_hz": 20, "num_chunks": count,
+                  "published": bool(prepared.get("published", False) or any(r.get("published", False) for r in results))}
         if trace_writer is not None:
-            trace_path = trace_writer.begin_chunk(
-                chunk_index=chunk_index, metadata=metadata,
-                observation_before=observation, actions=actions,
-                adapted_chunk=adapted_chunk)
-        command_started = time.monotonic()
-        completed = transport.request({"operation": "chunk", "actions": actions.tolist(),
-                                       "execute_speed_scale": execute_speed_scale})
-        if completed.get('status') != 'PASS':
-            raise RuntimeError("Guarded chunk failed; further inference stopped")
-        command_duration = time.monotonic() - command_started
+            trace_writer.finish_run(report)
+        return report
+    except BaseException as error:
         if trace_writer is not None:
-            after = acquire_after(completed)
-            next_observation = after
-            trace_writer.finish_chunk(
-                trace_path,
-                observation_after=after,
-                command_duration_s=command_duration,
-                end_to_end_duration_s=time.monotonic() - command_started,
-            )
-        results.append(completed)
-    return {"mode": "execute", "prepare": prepared, "chunks": results,
-            "checkpoint": metadata["checkpoint"], "norm_stats": metadata["norm_stats"],
-            "action_shape": [50,58], "action_hz":20, "num_chunks":len(results),
-            "published": any(r.get("published", False) for r in [prepared, *results])}
+            status = "INTERRUPTED" if isinstance(error, KeyboardInterrupt) else "FAILED"
+            if trace_path is not None:
+                trace_writer.fail_chunk(trace_path, error=str(error), stage=stage)
+            trace_writer.finish_run({"status": status, "stage": stage, "num_chunks": count,
+                                     "prepare": prepared, "error": str(error) or type(error).__name__})
+        raise

@@ -53,7 +53,7 @@ def test_failed_prepare_does_not_acquire_observation_or_execute(backend):
 
 def test_cli_execute_cannot_continue_after_prepare_failure(monkeypatch):
     from deploy.fr3_sharpa_runtime import run
-    monkeypatch.setattr(sys, "argv", ["run", "--execute", "--enable-hardware", "--prepare-config", "/pose.json", "--ros-overlay", "/overlay"])
+    monkeypatch.setattr(sys, "argv", ["run", "--execute", "--enable-hardware", "--sharpa-backend", "litchibot", "--prepare-config", "/pose.json", "--ros-overlay", "/overlay"])
     def reject(*args): raise RuntimeError("prepare rejected")
     monkeypatch.setattr(run, "prepare_before_observation", reject)
     monkeypatch.setattr(run, "SharpaRuntime", lambda *args: pytest.fail("policy must not run"))

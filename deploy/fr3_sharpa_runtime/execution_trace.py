@@ -63,6 +63,30 @@ class ExecutionTraceWriter:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.trace_id = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
         self.paths = []
+        self.run_path = self.directory / f"{self.trace_id}-run.json"
+        self.events_path = self.directory / f"{self.trace_id}-events.jsonl"
+
+    def event(self, stage, **fields):
+        payload = {"stage": stage, "monotonic_ns": time.monotonic_ns(), **fields}
+        with self.events_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(_json_value(payload), allow_nan=False) + "\n")
+
+    def finish_run(self, report):
+        self._write(self.run_path, {"trace_id": self.trace_id, **report})
+
+    @staticmethod
+    def _write(destination, payload):
+        temporary = destination.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+
+    def fail_chunk(self, path, *, error, stage):
+        destination = Path(path)
+        payload = json.loads(destination.read_text(encoding="utf-8"))
+        if payload["status"] == "IN_FLIGHT":
+            payload["status"] = "FAILED"
+        payload.update({"error": error, "failure_stage": stage})
+        self._write(destination, payload)
 
     def _base_payload(self, *, chunk_index: int, metadata: dict, observation_before: dict,
                       actions: np.ndarray, adapted_chunk) -> dict:
@@ -108,14 +132,16 @@ class ExecutionTraceWriter:
             self.paths.append(str(destination))
         return str(destination)
 
-    def finish_chunk(self, path: str, *, observation_after: dict,
-                     command_duration_s: float, end_to_end_duration_s: float) -> None:
+    def finish_chunk(self, path: str, *, observation_after: dict | None,
+                     command_duration_s: float, end_to_end_duration_s: float, execution_report=None) -> None:
         destination = Path(path)
         payload = json.loads(destination.read_text(encoding="utf-8"))
         payload.update({
             "status": "COMPLETE",
-            "observation_after": observation_metadata(observation_after),
-            "feedback_after": np.asarray(observation_after["observation/state"], dtype=np.float32).tolist(),
+            "observation_after": observation_metadata(observation_after) if observation_after is not None else None,
+            "feedback_after": (np.asarray(observation_after["observation/state"], dtype=np.float32).tolist()
+                               if observation_after is not None else None),
+            "execution_report": execution_report,
             "chunk_duration_s": float(command_duration_s),
             "end_to_end_duration_s": float(end_to_end_duration_s),
         })

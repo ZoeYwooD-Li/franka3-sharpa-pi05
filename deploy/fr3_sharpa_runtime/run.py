@@ -1,4 +1,4 @@
-"""One-chunk CLI. Default and ros-test modes cannot publish ROS commands."""
+"""Prepare and chunk-loop CLI. Offline modes never publish commands."""
 
 from __future__ import annotations
 
@@ -164,49 +164,54 @@ def execute_policy_prepare(args):
     worker = None
     trace_writer = (ExecutionTraceWriter(args.execution_trace_dir)
                     if args.sharpa_backend == "sdk_direct" else None)
-    if args.sharpa_backend == "sdk_direct":
-        # Direct SDK owns the Wave devices and publishes their feedback before
-        # the first observation is captured.  This avoids starting a second
-        # SDK connection after a legacy sharpa_driver snapshot.
-        worker = MotionWorker(["pixi", "run", "-e", "ros2", "bash", "-lc", inner],
-                              cwd=ROS_PROJECT, protocol_fd=True)
-        atexit.register(worker.close)
-        ready = worker.request({"operation": "ready"})
-        if ready.get("operation") != "ready":
-            raise RuntimeError(f"sdk_direct worker did not become ready: {ready}")
-    _start_observation_worker(args.ros_overlay)
-    runtime = SharpaRuntime(args.policy_url)
-    def infer(observation):
-        # Policy cold start can make the first read-only inference stale.  Drop
-        # that result, reacquire all sensors, and retry once.  The 200 ms gate
-        # itself remains unchanged for every command-capable result.
-        current = observation
-        for attempt in range(2):
-            result = runtime.infer_chunk(current)
-            age = time.monotonic_ns() - current['_captured_monotonic_ns']
-            if 0 <= age <= 200_000_000:
-                return result
-            if attempt == 0:
-                print("POLICY WARMUP: discarded stale inference; reacquiring observation", file=sys.stderr)
-                current = live_observation(args.ros_overlay, args.prompt)
-        raise RuntimeError("Observation expired during inference; no new target/chunk will be sent")
-    initial = live_observation(args.ros_overlay, args.prompt)
-    # Infer and validate freshness before starting any command-capable worker.
-    first = infer(initial)
-    initial_used = False
-    def cached_first_infer(observation):
-        nonlocal initial_used
-        if not initial_used:
-            initial_used = True
-            return first
-        return infer(observation)
-    if args.sharpa_backend == "litchibot" and args.handoff_socket.exists():
-        from .handoff import HandoffClient
-        worker=HandoffClient(args.handoff_socket,enable_hardware=True)
-    elif worker is None:
-        worker = MotionWorker(["pixi", "run", "-e", "ros2", "bash", "-lc", inner],
-                              cwd=ROS_PROJECT, protocol_fd=args.sharpa_backend == "sdk_direct")
     try:
+        if args.sharpa_backend == "sdk_direct":
+            # Direct SDK owns the Wave devices and publishes their feedback before
+            # the first observation is captured.  This avoids starting a second
+            # SDK connection after a legacy sharpa_driver snapshot.
+            worker = MotionWorker(["pixi", "run", "-e", "ros2", "bash", "-lc", inner],
+                                  cwd=ROS_PROJECT, protocol_fd=True)
+            atexit.register(worker.close)
+            ready = worker.request({"operation": "ready"})
+            if ready.get("operation") != "ready":
+                raise RuntimeError(f"sdk_direct worker did not become ready: {ready}")
+        _start_observation_worker(args.ros_overlay)
+        runtime = SharpaRuntime(args.policy_url)
+        def infer(observation):
+            # Policy cold start can make the first read-only inference stale.  Drop
+            # that result, reacquire all sensors, and retry once.  The 200 ms gate
+            # itself remains unchanged for every command-capable result.
+            current = observation
+            for attempt in range(2):
+                result = runtime.infer_chunk(current)
+                age = time.monotonic_ns() - current['_captured_monotonic_ns']
+                if 0 <= age <= 200_000_000:
+                    # Keep the trace paired with the observation actually used
+                    # after a warmup retry, rather than the expired original.
+                    if current is not observation:
+                        observation.clear()
+                        observation.update(current)
+                    return result
+                if attempt == 0:
+                    print("POLICY WARMUP: discarded stale inference; reacquiring observation", file=sys.stderr)
+                    current = live_observation(args.ros_overlay, args.prompt)
+            raise RuntimeError("Observation expired during inference; no new target/chunk will be sent")
+        initial = live_observation(args.ros_overlay, args.prompt)
+        # Infer and validate freshness before starting any command-capable worker.
+        first = infer(initial)
+        initial_used = False
+        def cached_first_infer(observation):
+            nonlocal initial_used
+            if not initial_used:
+                initial_used = True
+                return first
+            return infer(observation)
+        if args.sharpa_backend == "litchibot" and args.handoff_socket.exists():
+            from .handoff import HandoffClient
+            worker=HandoffClient(args.handoff_socket,enable_hardware=True)
+        elif worker is None:
+            worker = MotionWorker(["pixi", "run", "-e", "ros2", "bash", "-lc", inner],
+                                  cwd=ROS_PROJECT, protocol_fd=args.sharpa_backend == "sdk_direct")
         result = prepare_and_run_chunks(cached_first_infer,
             lambda completed: observation_after_completion(args, completed), worker, initial,
             num_chunks=args.num_chunks, speed_rad_s=args.prepare_speed_rad_s,
@@ -214,9 +219,17 @@ def execute_policy_prepare(args):
             trace_writer=trace_writer)
         if trace_writer is not None:
             result["execution_traces"] = trace_writer.paths
+            result["run_report"] = str(trace_writer.run_path)
         return result
+    except BaseException as error:
+        if trace_writer is not None and not trace_writer.run_path.exists():
+            trace_writer.finish_run({"status": "INTERRUPTED" if isinstance(error, KeyboardInterrupt) else "FAILED",
+                                     "stage": "startup", "error": str(error) or type(error).__name__,
+                                     "num_chunks": 0})
+        raise
     finally:
-        worker.close()
+        if worker is not None:
+            worker.close()
 
 
 def verify_handoff(args):
@@ -342,7 +355,7 @@ def main() -> None:
     modes.add_argument('--handoff-verify',action='store_true',help='Verify persistent acquisition IPC + policy without enabling motion')
     from .handoff import DEFAULT_SOCKET
     parser.add_argument('--handoff-socket',type=Path,default=DEFAULT_SOCKET)
-    parser.add_argument("--prepare-config", type=Path, help="Explicit 58D task initial pose; required before execute")
+    parser.add_argument("--prepare-config", type=Path, help="Legacy litchibot only: configured 58D task pose; sdk_direct uses policy-first prepare")
     parser.add_argument("--prepare-policy-first", action="store_true",
                         help="Execute-only: slowly approach initial policy first target through existing guards, then re-infer")
     parser.add_argument("--prepare-speed-rad-s", type=float, default=0.03,
@@ -350,13 +363,13 @@ def main() -> None:
     parser.add_argument("--execute-speed-scale", type=float, default=1.0,
                         help="sdk_direct chunk time scale in (0,1]; 0.1 emits ten interpolation steps per policy step")
     parser.add_argument("--num-chunks", type=int, default=1,
-                        help="Finite number of full 50-frame chunks after policy-first prepare")
+                        help="Number of full 50-frame chunks after prepare; 0 repeats until Ctrl-C")
     parser.add_argument("--policy-url", default=config.POLICY_URL)
     parser.add_argument("--episode-parquet", type=Path)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--ros-overlay", type=Path, help="ROS overlay containing teleop_interfaces for Pixi ROS Python")
     parser.add_argument("--enable-hardware", action="store_true")
-    parser.add_argument("--sharpa-backend", choices=("litchibot", "sdk_direct"), default="litchibot",
+    parser.add_argument("--sharpa-backend", choices=("litchibot", "sdk_direct"), default="sdk_direct",
                         help="Sharpa command backend; sdk_direct bypasses the legacy litchibot validation path")
     parser.add_argument("--execution-trace-dir", type=Path, default=config.EXECUTION_TRACE_DIR,
                         help="Directory for sdk_direct per-chunk JSON execution traces")
@@ -368,8 +381,12 @@ def main() -> None:
     if args.mode == "execute":
         if not args.enable_hardware or args.episode_parquet:
             parser.error("execute requires --enable-hardware and live ROS observations; recorded samples are forbidden")
-        if args.prepare_config is None and not args.prepare_policy_first:
-            parser.error("execute requires --prepare-config; prepare must finish before policy execution")
+        if args.sharpa_backend == "sdk_direct":
+            if args.prepare_config is not None:
+                parser.error("sdk_direct uses policy-first prepare; --prepare-config belongs to the legacy backend")
+            args.prepare_policy_first = True
+        elif args.prepare_config is None and not args.prepare_policy_first:
+            parser.error("legacy execute requires --prepare-config or --prepare-policy-first")
     elif args.mode == "prepare":
         if args.enable_hardware or args.episode_parquet or args.prepare_config is None:
             parser.error("prepare requires --prepare-config and forbids recorded input/hardware enable; guarded motion backend pending")
@@ -382,11 +399,11 @@ def main() -> None:
         parser.error("offline modes require --episode-parquet")
     if args.prepare_policy_first and (args.mode != 'execute' or args.prepare_config is not None):
         parser.error("--prepare-policy-first requires execute and cannot be mixed with --prepare-config")
-    if (args.num_chunks < 1 or not np.isfinite(args.prepare_speed_rad_s)
+    if (args.num_chunks < 0 or not np.isfinite(args.prepare_speed_rad_s)
             or args.prepare_speed_rad_s <= 0
             or not np.isfinite(args.execute_speed_scale)
             or not 0 < args.execute_speed_scale <= 1):
-        parser.error("Positive finite prepare speed, execute speed scale in (0,1], and positive num-chunks required")
+        parser.error("Positive finite prepare speed, execute speed scale in (0,1], and nonnegative num-chunks required (0 = continuous)")
     if args.num_chunks != 1 and not args.prepare_policy_first:
         parser.error("Multiple chunks require the persistent --prepare-policy-first path")
     if args.mode != "dry-run" and args.ros_overlay is None:
@@ -420,7 +437,11 @@ def main() -> None:
         return
     preparation = None
     if args.mode == 'execute' and args.prepare_policy_first:
-        print(json.dumps(execute_policy_prepare(args), indent=2))
+        try:
+            print(json.dumps(execute_policy_prepare(args), indent=2))
+        except KeyboardInterrupt:
+            print("Execution interrupted; worker released. See the latest *-run.json report.", file=sys.stderr)
+            raise SystemExit(130)
         return
     if args.mode == "execute":
         preparation, observation = prepare_before_observation(args)

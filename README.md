@@ -1,10 +1,14 @@
 # OpenPI FR3 双臂 + 双 Sharpa π0.5 番茄协作任务
 
-更新日期：2026-10-08
+更新日期：2026-10-21
 
 本仓库基于 Physical Intelligence 的 OpenPI，面向 **双 FR3 机械臂 + 双 Sharpa 灵巧手** 的番茄双手协作任务：右手抓取并移动到中间，左手摘取番茄，再由左手放入碗中。
 
 当前仓库同时保留原有的 FR3 + Wuji 54 维工程。Wuji 配置和部署功能不变；Sharpa 使用独立的 58 维数据协议、模型配置和离线验收流程。
+
+## 当前 Sharpa 部署入口（chunk-base-test）
+
+当前分支的部署为 20 Hz、58D、50 帧 chunk，使用 `sdk_direct`。流程为 policy-first prepare → 实测到位 → 重新观测和推理 → 完整 chunk 执行 → 下一轮；支持有限轮数或持续运行。两终端命令、依赖启动和日志说明见 [Sharpa runtime](deploy/fr3_sharpa_runtime/README.md)。下方训练状态保留早期初始化记录，不能作为当前部署状态。
 
 ## 当前状态
 

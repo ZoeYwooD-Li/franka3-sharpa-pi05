@@ -90,3 +90,55 @@ def test_stop_attempts_both_hands_when_one_stop_fails():
     assert any(error.startswith("left.stop:") for error in errors)
     assert all(hand.stopped for hand in hands)
     assert all(not hand.connected for hand in hands)
+
+
+def test_chunk_bridge_covers_large_first_target_and_retains_full_horizon():
+    from deploy.fr3_sharpa_runtime.sdk_direct import chunk_command_frames
+    actions = chunk(0.12)
+    actions[1:, 7] += 0.15  # Raw jump is too large; slow emitted frames are valid.
+    frames, bridge = chunk_command_frames(actions, np.zeros(58), speed_scale=0.1)
+    assert bridge == 80
+    assert np.max(np.abs(frames[0])) <= 0.03 * 0.05 + 1e-7
+    assert np.allclose(frames[bridge - 1], actions[0])
+    assert np.allclose(frames[-1], actions[-1])
+    assert len(frames) == bridge + 491
+    assert np.max(np.abs(np.diff(frames[:, 7:29], axis=0))) < 0.10
+    with pytest.raises(ValueError, match="Interpolated Sharpa stream"):
+        chunk_command_frames(actions, np.zeros(58), speed_scale=1.0)
+
+
+def test_nonreciprocal_scale_actually_slows_the_chunk():
+    assert len(list(scaled_action_frames(chunk(), 0.7))) > 50
+
+
+def test_clock_scheduler_does_not_accumulate_send_cost_or_burst_after_stall():
+    from deploy.fr3_sharpa_runtime.sdk_direct import play_command_frames
+    class Clock:
+        now = 0.0
+        def clock(self): return self.now
+        def sleep(self, duration): self.now += duration
+    timer = Clock()
+    starts = []
+    def send(frame):
+        starts.append(timer.now)
+        timer.now += 0.01
+    play_command_frames(chunk()[:4], send, lambda: None,
+                        clock=timer.clock, sleep=timer.sleep)
+    assert starts == pytest.approx([0, 0.05, 0.10, 0.15])
+    assert timer.now == pytest.approx(0.20)
+    starts.clear()
+    def stalled_send(frame):
+        starts.append(timer.now)
+        timer.now += 0.11
+    with pytest.raises(RuntimeError, match="deadline missed"):
+        play_command_frames(chunk()[:4], stalled_send, lambda: None,
+                            clock=timer.clock, sleep=timer.sleep)
+    assert len(starts) == 1
+
+
+def test_sdk_direct_can_validate_raw_ranges_before_time_stretching():
+    actions = chunk()
+    actions[1:, 7] = 0.15
+    validate_direct_hand_actions(actions, check_slew=False)
+    with pytest.raises(ValueError, match="slew"):
+        validate_direct_hand_actions(actions)

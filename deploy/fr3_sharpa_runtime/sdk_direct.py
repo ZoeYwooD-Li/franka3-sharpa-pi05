@@ -10,12 +10,13 @@ from __future__ import annotations
 import os
 import time
 import json
+import math
 from dataclasses import dataclass
 from typing import Callable, Any
 
 import numpy as np
 
-from .protocol import LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE, as_finite_action_chunk
+from .protocol import DT_NS, LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE, as_finite_action_chunk
 
 SDK_SLEW_LIMIT_RAD = 0.10
 WATCHDOG_TIMEOUT_S = 0.25
@@ -26,7 +27,7 @@ def scaled_action_frames(actions: np.ndarray, speed_scale: float):
     chunk = as_finite_action_chunk(actions)
     if not np.isfinite(speed_scale) or not 0.0 < speed_scale <= 1.0:
         raise ValueError("execute speed scale must be finite and in (0, 1]")
-    steps = max(1, int(round(1.0 / float(speed_scale))))
+    steps = max(1, int(math.ceil(1.0 / float(speed_scale))))
     previous = chunk[0].copy()
     yield previous
     for target in chunk[1:]:
@@ -36,7 +37,57 @@ def scaled_action_frames(actions: np.ndarray, speed_scale: float):
         previous = target.copy()
 
 
-def validate_direct_hand_actions(actions: np.ndarray) -> None:
+def chunk_command_frames(actions, start_state, *, speed_scale=1.0, approach_speed_rad_s=0.03):
+    """Join measured state to a new chunk, preserving every policy target.
+
+    The bridge is joint-space interpolation, not another policy inference.
+    Check slew on the emitted stream (including its first transition), rather
+    than rejecting raw nodes that become executable through time stretching.
+    Joint limits on the policy targets and start state are checked by ROS.
+    """
+    chunk = as_finite_action_chunk(actions)
+    start = np.asarray(start_state, dtype=np.float32)
+    if start.shape != (58,) or not np.isfinite(start).all():
+        raise ValueError("Chunk bridge requires finite measured 58D state")
+    if not np.isfinite(approach_speed_rad_s) or approach_speed_rad_s <= 0:
+        raise ValueError("Chunk bridge speed must be finite and positive")
+    delta = chunk[0] - start
+    distance = float(np.max(np.abs(delta)))
+    bridge_steps = int(math.ceil(distance / (approach_speed_rad_s * DT_NS / 1e9)))
+    bridge = [start + delta * (i / bridge_steps) for i in range(1, bridge_steps + 1)]
+    frames = np.asarray([*bridge, *scaled_action_frames(chunk, speed_scale)], dtype=np.float32)
+    changes = np.diff(np.vstack([start, frames]), axis=0)
+    for part in (LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE):
+        if np.max(np.abs(changes[:, part])) >= SDK_SLEW_LIMIT_RAD:
+            raise ValueError("Interpolated Sharpa stream exceeds slew limit; reduce execute speed scale")
+    return frames, bridge_steps
+
+
+def play_command_frames(frames, send, feedback, *, clock=time.monotonic, sleep=time.sleep):
+    """Schedule 20Hz against an absolute clock, without accumulating send time.
+
+    Never burst stale frames to catch up. Real feedback is checked before every
+    command; the native SDK watchdog and FR3 gateway remain authoritative.
+    """
+    period = DT_NS / 1e9
+    started = clock()
+    for index, frame in enumerate(frames):
+        due = started + index * period
+        remaining = due - clock()
+        if remaining > 0:
+            sleep(remaining)
+        if clock() - due > period:
+            raise RuntimeError("Chunk 20Hz deadline missed; stopped")
+        feedback()
+        if clock() - due > period:
+            raise RuntimeError("Chunk feedback missed 20Hz deadline; stopped")
+        send(frame)
+    remaining = started + len(frames) * period - clock()
+    if remaining > 0:
+        sleep(remaining)
+
+
+def validate_direct_hand_actions(actions: np.ndarray, *, check_slew: bool = True) -> None:
     """Validate finite positions, native Wave limits and per-frame slew."""
     chunk = as_finite_action_chunk(actions)
     try:
@@ -52,7 +103,7 @@ def validate_direct_hand_actions(actions: np.ndarray) -> None:
         limits = np.asarray(SHARPA_JOINT_LIMITS, dtype=np.float64)
         if np.any(hand < limits[:, 0]) or np.any(hand > limits[:, 1]):
             raise ValueError(f"{side} Sharpa SDK command exceeds Wave joint limits")
-        if len(hand) > 1 and np.max(np.abs(np.diff(hand, axis=0))) >= SDK_SLEW_LIMIT_RAD:
+        if check_slew and len(hand) > 1 and np.max(np.abs(np.diff(hand, axis=0))) >= SDK_SLEW_LIMIT_RAD:
             raise ValueError(f"{side} Sharpa SDK command exceeds slew limit")
 
 
