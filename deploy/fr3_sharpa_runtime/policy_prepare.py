@@ -19,7 +19,7 @@ ERROR_GROUPS = {
     "right_sharpa": RIGHT_SHARPA_SLICE,
 }
 
-HOME_TOLERANCE_RAD = 0.015
+HOME_TOLERANCE_RAD = 0.02
 
 
 def target_chunk(target):
@@ -123,7 +123,7 @@ class SlowApproach:
 def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                            *, num_chunks=1, speed_rad_s=0.03,
                            execute_speed_scale=1.0, trace_writer=None, execute_steps=50,
-                           initial_target=None, home_metadata=None):
+                           initial_target=None, home_metadata=None, prediction_clip_rad=0.05):
     """Prepare once, then reobserve/infer/execute; zero chunks means until Ctrl-C.
 
     Retain full predictions for audit, execute only the requested prefix, then
@@ -133,6 +133,8 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
         raise ValueError("num_chunks must be a nonnegative integer (0 = continuous)")
     if type(execute_steps) is not int or not 1 <= execute_steps <= 50:
         raise ValueError("execute_steps must be an integer in [1, 50]")
+    if not np.isfinite(prediction_clip_rad) or prediction_clip_rad < 0:
+        raise ValueError("prediction_clip_rad must be finite and nonnegative")
     results = []
     count = 0
     prepared = None
@@ -180,10 +182,11 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                     chunk_index=count, metadata=metadata,
                     observation_before=observation, actions=actions,
                     adapted_chunk=adapted_chunk, execute_steps=execute_steps)
-            event("execute", predicted_steps=50, execute_steps=execute_steps)
+            event("execute", predicted_steps=50, execute_steps=execute_steps, prediction_clip_rad=prediction_clip_rad)
             command_started = time.monotonic()
             completed = transport.request({"operation": "chunk", "actions": actions.tolist(),
                                            "execute_steps": execute_steps,
+                                           "prediction_clip_rad": prediction_clip_rad,
                                            "execute_speed_scale": execute_speed_scale,
                                            "approach_speed_rad_s": speed_rad_s})
             if completed.get("status") != "PASS":

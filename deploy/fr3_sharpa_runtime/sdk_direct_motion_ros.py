@@ -25,7 +25,8 @@ from .policy_prepare import SlowApproach, target_chunk
 from .protocol import (DT_NS, LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE,
                        as_finite_action_chunk)
 from .ros_transport import construct_messages, validate_action_ranges, validate_gateway_admission
-from .sdk_direct import SharpaSdkDirectExecutor, action_prefix, chunk_command_frames, play_command_frames
+from .sdk_direct import (DEFAULT_PREDICTION_CLIP_RAD, SharpaSdkDirectExecutor, action_prefix,
+                         chunk_command_frames, clip_hand_predictions, play_command_frames)
 
 
 def main() -> None:
@@ -53,6 +54,7 @@ def main() -> None:
     ros_spin_thread = None
     session_id = f"openpi-sdk-direct-{uuid.uuid4().hex}"
     sequence = 0
+    clipping_report = None
 
     def publish_frame(values: np.ndarray) -> None:
         nonlocal sequence
@@ -141,6 +143,7 @@ def main() -> None:
             if not line:
                 break
             request = json.loads(line)
+            clipping_report = None
             operation = request.get("operation")
             if operation == "ready":
                 print(json.dumps({"status": "PASS", "operation": "ready",
@@ -183,6 +186,12 @@ def main() -> None:
             elif operation == "chunk":
                 actions = as_finite_action_chunk(np.asarray(request["actions"], dtype=np.float32))
                 execute_steps = request.get("execute_steps", 50)
+                actions, clipping_report = clip_hand_predictions(
+                    actions, execute_steps=execute_steps,
+                    max_correction_rad=float(request.get("prediction_clip_rad", DEFAULT_PREDICTION_CLIP_RAD)))
+                if clipping_report["corrected_values"]:
+                    print(f"[prediction-clip] {clipping_report['corrected_values']} values corrected; "
+                          f"max={clipping_report['max_applied_correction_rad']:.6f} rad", file=sys.stderr, flush=True)
                 selected = action_prefix(actions, execute_steps)
                 validation_actions = actions.copy()
                 validation_actions[execute_steps:] = selected[-1]
@@ -215,6 +224,7 @@ def main() -> None:
                 print(json.dumps({"status": "PASS", "operation": "chunk", "published": True,
                                   "frames": len(frames), "policy_frames": execute_steps,
                                   "predicted_policy_frames": len(actions), "execute_steps": execute_steps,
+                                  "prediction_clipping": clipping_report,
                                   "executed_action_indices": [0, execute_steps - 1],
                                   "bridge_frames": bridge_frames,
                                   "completion": "commands_sent", "end_error_rad": error_by_group,
@@ -232,6 +242,8 @@ def main() -> None:
         # such as ``'str' object has no attribute 'value'`` and cannot be
         # distinguished from ROS or gateway failures by the parent runtime.
         detail = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        if clipping_report is not None:
+            detail += "\nPrediction clipping audit: " + json.dumps(clipping_report, allow_nan=False)
         print(json.dumps({"status": "FAIL", "published": sequence > 0,
                           "reason": str(error), "detail": detail}), file=protocol, flush=True)
         raise SystemExit(1)

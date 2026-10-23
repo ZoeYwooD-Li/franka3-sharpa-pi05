@@ -16,10 +16,11 @@ from typing import Callable, Any
 
 import numpy as np
 
-from .protocol import DT_NS, LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE, as_finite_action_chunk
+from .protocol import DT_NS, LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE, SHARPA_JOINT_NAMES, as_finite_action_chunk
 
 SDK_SLEW_LIMIT_RAD = 0.10
 WATCHDOG_TIMEOUT_S = 0.25
+DEFAULT_PREDICTION_CLIP_RAD = 0.05
 
 
 def scaled_action_frames(actions: np.ndarray, speed_scale: float, *, execute_steps=50):
@@ -93,9 +94,8 @@ def play_command_frames(frames, send, feedback, *, clock=time.monotonic, sleep=t
         sleep(remaining)
 
 
-def validate_direct_hand_actions(actions: np.ndarray, *, check_slew: bool = True) -> None:
-    """Validate finite positions, native Wave limits and per-frame slew."""
-    chunk = as_finite_action_chunk(actions)
+def hand_joint_limits():
+    """Use exactly the same static range as the lower-level hand driver."""
     try:
         from litchi_hardware.hardware.sharpa.constants import SHARPA_JOINT_LIMITS
     except ImportError:
@@ -103,10 +103,52 @@ def validate_direct_hand_actions(actions: np.ndarray, *, check_slew: bool = True
             "SHARPA_SCHEMA_PATH", "/home/user/gello_upper_body_teleop/config/litchibot/sharpa_schema.json")
         with open(schema_path, encoding="utf-8") as stream:
             limits = json.load(stream)["joint_limits"]
-        SHARPA_JOINT_LIMITS = np.asarray(limits, dtype=np.float64)
+        SHARPA_JOINT_LIMITS = limits
+    limits = np.asarray(SHARPA_JOINT_LIMITS, dtype=np.float64)
+    if limits.shape != (22, 2) or not np.isfinite(limits).all() or np.any(limits[:, 0] > limits[:, 1]):
+        raise ValueError("Invalid Sharpa joint limit schema")
+    return limits
+
+
+def clip_hand_predictions(actions, *, execute_steps=15, max_correction_rad=DEFAULT_PREDICTION_CLIP_RAD):
+    """Project only selected model hand targets; never clip Home or measured state."""
+    if not np.isfinite(max_correction_rad) or max_correction_rad < 0:
+        raise ValueError("prediction clip allowance must be finite and nonnegative")
+    corrected = as_finite_action_chunk(actions)
+    action_prefix(corrected, execute_steps)
+    limits = hand_joint_limits()
+    # Round bounds inward: float32(upper) can otherwise exceed the float64 driver limit.
+    lower, upper = limits[:, 0].astype(np.float32), limits[:, 1].astype(np.float32)
+    lower = np.where(lower.astype(np.float64) < limits[:, 0], np.nextafter(lower, np.float32(np.inf)), lower)
+    upper = np.where(upper.astype(np.float64) > limits[:, 1], np.nextafter(upper, np.float32(-np.inf)), upper)
+    corrections = []
+    for side, part in (("left", LEFT_SHARPA_SLICE), ("right", RIGHT_SHARPA_SLICE)):
+        raw = corrected[:execute_steps, part].copy()
+        clipped = np.clip(raw, lower, upper)
+        differences = np.abs(clipped - raw)
+        if np.any(differences > np.float32(max_correction_rad)):
+            frame, joint = np.unravel_index(np.argmax(differences), differences.shape)
+            raise ValueError(
+                f"{side} {SHARPA_JOINT_NAMES[joint]} action[{frame}]={raw[frame, joint]:.8f} rad "
+                f"requires correction {differences[frame, joint]:.8f} rad > allowance {max_correction_rad:.8f} rad")
+        for frame, joint in np.argwhere(differences > 0):
+            corrections.append({"action_index": int(frame), "side": side,
+                                "joint": SHARPA_JOINT_NAMES[joint], "action_dimension": part.start + int(joint),
+                                "original_rad": float(raw[frame, joint]), "corrected_rad": float(clipped[frame, joint]),
+                                "correction_rad": float(differences[frame, joint])})
+        corrected[:execute_steps, part] = clipped
+    return corrected, {"max_allowed_correction_rad": float(max_correction_rad),
+                       "corrected_values": len(corrections),
+                       "max_applied_correction_rad": max((row["correction_rad"] for row in corrections), default=0.0),
+                       "corrections": corrections}
+
+
+def validate_direct_hand_actions(actions: np.ndarray, *, check_slew: bool = True) -> None:
+    """Validate finite positions, native Wave limits and per-frame slew."""
+    chunk = as_finite_action_chunk(actions)
+    limits = hand_joint_limits()
     for side, part in (("left", LEFT_SHARPA_SLICE), ("right", RIGHT_SHARPA_SLICE)):
         hand = chunk[:, part]
-        limits = np.asarray(SHARPA_JOINT_LIMITS, dtype=np.float64)
         if np.any(hand < limits[:, 0]) or np.any(hand > limits[:, 1]):
             raise ValueError(f"{side} Sharpa SDK command exceeds Wave joint limits")
         if check_slew and len(hand) > 1 and np.max(np.abs(np.diff(hand, axis=0))) >= SDK_SLEW_LIMIT_RAD:

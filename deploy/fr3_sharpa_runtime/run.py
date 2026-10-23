@@ -209,7 +209,8 @@ def execute_policy_prepare(args):
             execute_speed_scale=args.execute_speed_scale,
             trace_writer=trace_writer,
             execute_steps=getattr(args, "execute_steps", 50),
-            initial_target=initial_target, home_metadata=home_metadata)
+            initial_target=initial_target, home_metadata=home_metadata,
+            prediction_clip_rad=getattr(args, "prediction_clip_rad", 0.05))
         if trace_writer is not None:
             result["execution_traces"] = trace_writer.paths
             result["run_report"] = str(trace_writer.run_path)
@@ -361,6 +362,8 @@ def main() -> None:
                        help="Custom time scale in (0,1]; alternative to --speed; default is fast (1.0)")
     parser.add_argument("--execute-steps", type=int,
                         help="Execute first N of 50 predicted actions, then reobserve/reinfer (default 15)")
+    parser.add_argument("--prediction-clip-rad", type=float, default=0.05,
+                        help="Maximum per-value correction to hand limits for predicted actions only; 0 is strict")
     parser.add_argument("--initialization", choices=("home", "policy"), default="home",
                         help="sdk_direct: fixed arm and hand Home, or legacy policy first target")
     parser.add_argument("--home-poses", type=Path, default=Path(os.environ.get(
@@ -381,6 +384,8 @@ def main() -> None:
     parser.add_argument("--execution-trace-dir", type=Path, default=config.EXECUTION_TRACE_DIR,
                         help="Directory for sdk_direct per-chunk JSON execution traces")
     args = parser.parse_args()
+    if not np.isfinite(args.prediction_clip_rad) or args.prediction_clip_rad < 0:
+        parser.error("--prediction-clip-rad must be finite and nonnegative")
     if args.prepare_policy_first and args.sharpa_backend == "sdk_direct":
         args.initialization = "policy"
     if args.execute_steps is None:
@@ -408,6 +413,7 @@ def main() -> None:
             parser.error("Invalid speed, prepare speed or chunk count")
         print(json.dumps({"mode": "check", "hardware_output": False,
                           "speed": args.speed, "execute_speed_scale": args.execute_speed_scale,
+                          "prediction_clip_rad": args.prediction_clip_rad,
                           "prepare_speed_rad_s": args.prepare_speed_rad_s,
                           "home_tolerance_rad": HOME_TOLERANCE_RAD,
                           "num_chunks": args.num_chunks, "action_hz": config.ACTION_HZ,

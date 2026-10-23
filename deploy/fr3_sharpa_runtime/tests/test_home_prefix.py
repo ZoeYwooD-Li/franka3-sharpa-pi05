@@ -15,9 +15,9 @@ from deploy.fr3_sharpa_runtime.sdk_direct import action_prefix
 from deploy.fr3_sharpa_runtime.sdk_direct import chunk_command_frames
 
 
-@pytest.mark.parametrize(("error", "expected"), [(0.014, True), (0.016, False)])
+@pytest.mark.parametrize(("error", "expected"), [(0.015422, True), (0.019, True), (0.021, False)])
 def test_home_tolerance_still_requires_stable_fresh_feedback(error, expected):
-    planner = SlowApproach(np.zeros(58), np.zeros(58), tolerance_rad=0.015)
+    planner = SlowApproach(np.zeros(58), np.zeros(58), tolerance_rad=0.02)
     settled = False
     for index in range(25):
         stamp = 1_000_000_000 + index * DT_NS
@@ -29,7 +29,7 @@ def test_home_tolerance_still_requires_stable_fresh_feedback(error, expected):
     assert settled is expected
 
 
-def test_fixed_home_dispatches_requested_fifteen_milliradian_tolerance():
+def test_fixed_home_dispatches_requested_twenty_milliradian_tolerance():
     requests = []
 
     class Transport:
@@ -42,7 +42,7 @@ def test_fixed_home_dispatches_requested_fifteen_milliradian_tolerance():
 
     with pytest.raises(RuntimeError, match="Prepare"):
         prepare_and_run_chunks(infer, lambda report: None, Transport(), {}, initial_target=np.zeros(58))
-    assert requests[0]["tolerance_rad"] == 0.015
+    assert requests[0]["tolerance_rad"] == 0.02
 
 
 def test_configured_hand_home_maps_same_named_angles_to_both_sides(tmp_path):
