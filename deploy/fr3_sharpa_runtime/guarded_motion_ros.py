@@ -215,7 +215,7 @@ def main():
             if now < next_tick:
                 continue
             if now-next_tick > DT_NS:
-                raise RuntimeError("20Hz guarded motion deadline missed; stopped publishing")
+                raise RuntimeError("30Hz guarded motion deadline missed; stopped publishing")
             for _ in range(32):
                 rclpy.spin_once(node, timeout_sec=0.0)
             current = feedback.snapshot()
@@ -277,7 +277,7 @@ def main():
                 if chunk_index == 50:
                     chunk = None
                     motion_reply(completion('chunk', frames=50))
-            # The same session keeps sending the last absolute target at 20Hz
+            # The same session keeps sending the last absolute target at 30Hz
             # during observation/inference; this retains the existing watchdog.
     except Exception as error:
         result={"status": "FAIL", "reason": str(error), "published": sequence > 0,

@@ -7,7 +7,7 @@ import sys
 from .feedback import LiveFeedback
 from .preflight import execute_preflight
 from .protocol import (
-    DT_NS, LEFT_FR3_SLICE, LEFT_SHARPA_SLICE, RIGHT_FR3_SLICE,
+    DT_NS, FPS, LEFT_FR3_SLICE, LEFT_SHARPA_SLICE, RIGHT_FR3_SLICE,
     RIGHT_SHARPA_SLICE, SHARPA_JOINT_NAMES, as_finite_action_chunk,
 )
 
@@ -92,7 +92,7 @@ class SlowApproach:
                 f"error_by_group={errors}, worst_left_sharpa={left_detail})"
             )
         # A straight joint-space trajectory; never alter the policy target.
-        # Progress only one nominal 20Hz interval even if scheduling is delayed.
+        # Progress only one nominal 30Hz interval even if scheduling is delayed.
         error = self.target-self.previous
         maximum = float(np.max(np.abs(error)))
         alpha = min(1.0, self.speed_rad_s*(DT_NS/1e9)/maximum) if maximum else 1.0
@@ -196,7 +196,7 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                     execution_report=completed)
         report = {"mode": "execute", "status": "COMPLETE", "prepare": prepared, "chunks": results,
                   "checkpoint": metadata["checkpoint"], "norm_stats": metadata["norm_stats"],
-                  "action_shape": [50, 58], "action_hz": 20, "num_chunks": count,
+                  "action_shape": [50, 58], "action_hz": FPS, "num_chunks": count,
                   "published": bool(prepared.get("published", False) or any(r.get("published", False) for r in results))}
         if trace_writer is not None:
             trace_writer.finish_run(report)

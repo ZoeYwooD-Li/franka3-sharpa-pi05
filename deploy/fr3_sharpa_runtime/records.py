@@ -7,6 +7,8 @@ from typing import Tuple
 
 import numpy as np
 
+from .protocol import FPS, DT_NS
+
 
 def _vector(value: np.ndarray, shape: tuple[int, ...], label: str) -> np.ndarray:
     result = np.asarray(value, dtype=np.float32)
@@ -88,12 +90,12 @@ class OfflineChunk:
     def __post_init__(self) -> None:
         if len(self.frames) != 50:
             raise ValueError("OfflineChunk must contain 50 frames")
-        if self.fps != 20 or not self.causal:
-            raise ValueError("Sharpa offline chunk requires 20Hz causal metadata")
+        if self.fps != FPS or not self.causal:
+            raise ValueError(f"Sharpa offline chunk requires {FPS}Hz causal metadata")
         if self.start_timestamp_ns < 0 or not self.session_id or not self.source:
             raise ValueError("Invalid chunk metadata")
         expected = self.start_timestamp_ns
         for sequence, frame in enumerate(self.frames):
             if frame.sequence != sequence or frame.timestamp_ns != expected:
                 raise ValueError("Chunk timestamps or sequences are not contiguous")
-            expected += 50_000_000
+            expected += DT_NS

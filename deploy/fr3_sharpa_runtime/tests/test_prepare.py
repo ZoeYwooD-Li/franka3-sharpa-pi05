@@ -1,3 +1,4 @@
+from deploy.fr3_sharpa_runtime.protocol import DT_NS, FPS
 import sys
 from types import SimpleNamespace
 import numpy as np
@@ -18,7 +19,7 @@ class FakeGuardedBackend:
     def now_monotonic_ns(self): return self.clock
     def now_ros_ns(self): return self.clock+10_000_000_000
     def read_feedback(self):
-        self.clock += 50_000_000
+        self.clock += DT_NS
         self.events.append("feedback")
         if self.moving:
             self.state[0] = 0.03 if self.state[0] == 0 else 0

@@ -49,6 +49,7 @@ class SharpaRuntime:
         self.adapter = SharpaActionAdapter()
 
     def infer_chunk(self, observation: dict):
+        config.require_checkpoint()
         entered_ns = time.monotonic_ns()
         # Import here so the pure adapter remains importable in Pixi ROS2.
         from openpi_client import msgpack_numpy
@@ -63,18 +64,7 @@ class SharpaRuntime:
         with connect(self.policy_url, compression=None, max_size=None, open_timeout=10, close_timeout=5) as ws:
             metadata = msgpack_numpy.unpackb(ws.recv(timeout=10))
             timing["websocket_metadata_ready_monotonic_ns"] = time.monotonic_ns()
-            if metadata.get("config_name") != config.CONFIG_NAME:
-                raise ValueError("Policy server config does not match Sharpa runtime")
-            if metadata.get("checkpoint") != str(config.CHECKPOINT):
-                raise ValueError("Policy server checkpoint does not match frozen runtime")
-            if metadata.get("norm_stats") != str(config.NORM_STATS):
-                raise ValueError("Policy server norm_stats does not match frozen runtime")
-            if (
-                metadata.get("action_dim") != config.ACTION_DIM
-                or metadata.get("action_horizon") != config.ACTION_HORIZON
-                or metadata.get("action_hz") != config.ACTION_HZ
-            ):
-                raise ValueError("Policy server action contract does not match Sharpa runtime")
+            config.validate_policy_metadata(metadata)
             start = time.monotonic_ns()
             payload = msgpack_numpy.Packer().pack(clean)
             timing["observation_msgpack_ms"] = (time.monotonic_ns()-start)/1e6

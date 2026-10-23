@@ -1,6 +1,6 @@
 # OpenPI FR3 双臂 + 双 Sharpa π0.5 番茄协作任务
 
-更新日期：2026-10-21
+更新日期：2026-10-23
 
 本仓库基于 Physical Intelligence 的 OpenPI，面向 **双 FR3 机械臂 + 双 Sharpa 灵巧手** 的番茄双手协作任务：右手抓取并移动到中间，左手摘取番茄，再由左手放入碗中。
 
@@ -8,7 +8,7 @@
 
 ## 当前 Sharpa 部署入口（chunk-base-test）
 
-当前分支的部署为 20 Hz、58D、50 帧 chunk，使用 `sdk_direct`。流程为 policy-first prepare → 实测到位 → 重新观测和推理 → 完整 chunk 执行 → 下一轮；支持有限轮数或持续运行。两终端命令、依赖启动和日志说明见 [Sharpa runtime](deploy/fr3_sharpa_runtime/README.md)。下方训练状态保留早期初始化记录，不能作为当前部署状态。
+当前分支的部署为 π0.5 **全量微调**、30 Hz、58D、50 帧 absolute chunk，使用 `sdk_direct`。当前默认权重是外置盘 `sharpa_tomato_ckpt_4000`，配套资产为 `tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz`；已通过真实 GPU 加载及假观测推理，尚未验证实机任务。流程为 policy-first prepare → 实测到位 → 重新观测和推理 → 完整 chunk 执行 → 下一轮；支持有限轮数或持续运行。两终端命令、依赖启动和日志说明见 [Sharpa runtime](deploy/fr3_sharpa_runtime/README.md)。下方训练状态保留早期初始化记录，不能作为当前部署状态。
 
 ## 当前状态
 
@@ -16,7 +16,7 @@
 - 模型：π0.5，`action_dim=58`，`action_horizon=50`
 - 动作顺序：左 FR3 7 + 左 Sharpa 22 + 右 FR3 7 + 右 Sharpa 22
 - 输入：三路 RGB、58 维机器人状态、任务文本
-- 当前正式训练策略沿用 Wuji 工程：
+- 以下为早期 LoRA 训练策略记录；当前 fullft 部署以页面上方入口为准：
   - SigLIP 全量训练
   - Gemma 2B 主干冻结 + LoRA
   - Gemma 300M Action Expert 主干冻结 + LoRA
@@ -25,7 +25,7 @@
   - AdamW、cosine warmup、关闭 EMA
 - 官方 `pi05_base` checkpoint 已在本机完成真实兼容性验证
 - 已使用 `episode284` 真实 batch 完成 forward/backward、单次 optimizer step、参数和 optimizer state 保存恢复验证
-- 尚未启动 Sharpa 长时间训练，也没有连接或控制硬件
+- 此段记载的是早期初始化阶段，不代表当前部署进度
 
 Sharpa 的训练配置位于 [`src/openpi/training/config.py`](src/openpi/training/config.py)，模型 freeze filter 位于 [`src/openpi/models/pi0_config.py`](src/openpi/models/pi0_config.py)。
 

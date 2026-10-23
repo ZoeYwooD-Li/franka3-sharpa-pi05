@@ -242,7 +242,7 @@ def main():
                 if not 0 <= now_ros - chunk.frames[index].timestamp_ns <= MAX_AGE_NS:
                     raise RuntimeError("Stale/future command timestamp; stopped publishing")
                 if time.monotonic_ns() - target > DT_NS:
-                    raise RuntimeError("20Hz deadline missed; stopped publishing")
+                    raise RuntimeError("30Hz deadline missed; stopped publishing")
                 if direct is not None:
                     direct.send(triple[1].position, triple[2].position)
                     publishers[0].publish(triple[0])

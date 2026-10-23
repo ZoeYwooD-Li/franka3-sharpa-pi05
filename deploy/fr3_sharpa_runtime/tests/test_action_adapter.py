@@ -1,3 +1,4 @@
+from deploy.fr3_sharpa_runtime.protocol import DT_NS, FPS
 import numpy as np
 import pytest
 
@@ -42,7 +43,7 @@ def test_timestamp_interval_and_sequence_continuity():
     timestamps = [frame.timestamp_ns for frame in result.frames]
     sequences = [frame.sequence for frame in result.frames]
     assert sequences == list(range(50))
-    assert [b - a for a, b in zip(timestamps, timestamps[1:])] == [50_000_000] * 49
+    assert [b - a for a, b in zip(timestamps, timestamps[1:])] == [DT_NS] * 49
 
 
 def test_frame_records_share_metadata():

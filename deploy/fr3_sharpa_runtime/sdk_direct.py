@@ -23,7 +23,7 @@ WATCHDOG_TIMEOUT_S = 0.25
 
 
 def scaled_action_frames(actions: np.ndarray, speed_scale: float):
-    """Time-stretch an absolute chunk while retaining 20 Hz output."""
+    """Time-stretch an absolute chunk while retaining 30 Hz output."""
     chunk = as_finite_action_chunk(actions)
     if not np.isfinite(speed_scale) or not 0.0 < speed_scale <= 1.0:
         raise ValueError("execute speed scale must be finite and in (0, 1]")
@@ -64,7 +64,7 @@ def chunk_command_frames(actions, start_state, *, speed_scale=1.0, approach_spee
 
 
 def play_command_frames(frames, send, feedback, *, clock=time.monotonic, sleep=time.sleep):
-    """Schedule 20Hz against an absolute clock, without accumulating send time.
+    """Schedule 30Hz against an absolute clock, without accumulating send time.
 
     Never burst stale frames to catch up. Real feedback is checked before every
     command; the native SDK watchdog and FR3 gateway remain authoritative.
@@ -77,10 +77,10 @@ def play_command_frames(frames, send, feedback, *, clock=time.monotonic, sleep=t
         if remaining > 0:
             sleep(remaining)
         if clock() - due > period:
-            raise RuntimeError("Chunk 20Hz deadline missed; stopped")
+            raise RuntimeError("Chunk 30Hz deadline missed; stopped")
         feedback()
         if clock() - due > period:
-            raise RuntimeError("Chunk feedback missed 20Hz deadline; stopped")
+            raise RuntimeError("Chunk feedback missed 30Hz deadline; stopped")
         send(frame)
     remaining = started + len(frames) * period - clock()
     if remaining > 0:
@@ -180,7 +180,7 @@ class SharpaSdkDirectExecutor:
     def resume_stream(self) -> None:
         """Start a new authorized command phase without reconnecting.
 
-        Policy inference and live observation happen between 20 Hz command
+        Policy inference and live observation happen between 30 Hz command
         phases.  That gap is intentional, so the next phase must establish a
         fresh watchdog epoch; once its first frame is sent, the normal
         watchdog continues to protect every subsequent frame.

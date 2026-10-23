@@ -1,4 +1,5 @@
 """Hardware-free integration of prepare, observations, policy and stream playback."""
+from deploy.fr3_sharpa_runtime.protocol import DT_NS, FPS
 import json
 import sys
 
@@ -38,7 +39,7 @@ class SimulatedRobot:
                 stamp = int(self.now * 1e9)
                 self.state, settled, _ = planner.step(self.feedback(), now_ros_ns=stamp,
                     now_monotonic_ns=stamp, enforce_execute_delta=False)
-                self.now += 0.05
+                self.now += DT_NS/1e9
                 if settled:
                     break
             else:

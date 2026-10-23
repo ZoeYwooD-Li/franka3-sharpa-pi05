@@ -1,3 +1,4 @@
+from deploy.fr3_sharpa_runtime.protocol import DT_NS, FPS
 from types import SimpleNamespace
 import sys
 import numpy as np
@@ -17,10 +18,10 @@ def test_large_initial_mismatch_approaches_with_small_steps_and_measured_settlin
     target[15] = 0.6
     planner = SlowApproach(target, state, speed_rad_s=0.03)
     previous = state.copy()
-    for i in range(600):
-        clock = 1_000_000_000+i*50_000_000
+    for i in range(1000):
+        clock = 1_000_000_000+i*DT_NS
         command, settled, error = planner.step(live(state, clock), now_ros_ns=clock, now_monotonic_ns=clock)
-        assert np.max(np.abs(command-previous)) <= 0.03*0.05+1e-7
+        assert np.max(np.abs(command-previous)) <= 0.03*(DT_NS/1e9)+1e-7
         previous = command.copy()
         state = command.copy()  # Mock robot follows only guarded incremental commands.
         if settled:
@@ -35,11 +36,11 @@ def test_commanded_arrival_alone_is_not_measured_arrival():
     target = np.full(58, 0.005, dtype=np.float32)
     state = np.full(58, -0.02, dtype=np.float32)
     planner = SlowApproach(target, target, timeout_s=0.3, stable_duration_s=0.1)
-    for i in range(6):
-        clock = 1_000_000_000+i*50_000_000
+    for i in range(10):
+        clock = 1_000_000_000+i*DT_NS
         _, settled, _ = planner.step(live(state, clock), now_ros_ns=clock, now_monotonic_ns=clock)
         assert not settled
-    clock += 50_000_000
+    clock += DT_NS
     with pytest.raises(TimeoutError):
         planner.step(live(state, clock), now_ros_ns=clock, now_monotonic_ns=clock)
 
@@ -49,7 +50,7 @@ def test_tracking_lag_stops_without_weakening_existing_delta_limit():
     planner = SlowApproach(np.full(58, 0.6), state)
     with pytest.raises(ValueError, match='first-target delta'):
         for i in range(200):
-            clock = 1_000_000_000+i*50_000_000
+            clock = 1_000_000_000+i*DT_NS
             planner.step(live(state, clock), now_ros_ns=clock, now_monotonic_ns=clock)
 
 
@@ -61,7 +62,7 @@ def test_sdk_direct_prepare_allows_large_delta_without_execute_gate():
         live(state, 1_000_000_000), now_ros_ns=1_000_000_000,
         now_monotonic_ns=1_000_000_000, enforce_execute_delta=False)
     assert not settled
-    assert 0.0 < float(command[0]) <= 0.03 * 0.05 + 1e-7
+    assert 0.0 < float(command[0]) <= 0.03 * (DT_NS/1e9) + 1e-7
 
 
 def test_stale_feedback_and_nonfinite_targets_are_rejected():

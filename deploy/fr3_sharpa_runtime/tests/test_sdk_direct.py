@@ -1,3 +1,4 @@
+from deploy.fr3_sharpa_runtime.protocol import DT_NS, FPS
 import numpy as np
 import pytest
 
@@ -97,8 +98,8 @@ def test_chunk_bridge_covers_large_first_target_and_retains_full_horizon():
     actions = chunk(0.12)
     actions[1:, 7] += 0.15  # Raw jump is too large; slow emitted frames are valid.
     frames, bridge = chunk_command_frames(actions, np.zeros(58), speed_scale=0.1)
-    assert bridge == 80
-    assert np.max(np.abs(frames[0])) <= 0.03 * 0.05 + 1e-7
+    assert bridge == 120
+    assert np.max(np.abs(frames[0])) <= 0.03 * (DT_NS/1e9) + 1e-7
     assert np.allclose(frames[bridge - 1], actions[0])
     assert np.allclose(frames[-1], actions[-1])
     assert len(frames) == bridge + 491
@@ -124,8 +125,8 @@ def test_clock_scheduler_does_not_accumulate_send_cost_or_burst_after_stall():
         timer.now += 0.01
     play_command_frames(chunk()[:4], send, lambda: None,
                         clock=timer.clock, sleep=timer.sleep)
-    assert starts == pytest.approx([0, 0.05, 0.10, 0.15])
-    assert timer.now == pytest.approx(0.20)
+    assert starts == pytest.approx([i * DT_NS/1e9 for i in range(4)])
+    assert timer.now == pytest.approx(4 * DT_NS/1e9)
     starts.clear()
     def stalled_send(frame):
         starts.append(timer.now)

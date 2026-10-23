@@ -9,7 +9,7 @@ import numpy as np
 
 ACTION_DIM = 58
 ACTION_HORIZON = 50
-FPS = 20
+FPS = 30
 DT_NS = 1_000_000_000 // FPS
 UNIT = "rad"
 ACTION_REPRESENTATION = "absolute_joint_position"

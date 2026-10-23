@@ -166,7 +166,7 @@ def main() -> None:
                         time.sleep(min(0.01, (next_tick-now)/1e9))
                         continue
                     if now - next_tick > DT_NS:
-                        raise RuntimeError("Prepare 20Hz deadline missed; stopped")
+                        raise RuntimeError("Prepare 30Hz deadline missed; stopped")
                     current = fresh_feedback()
                     command, settled, last_error = approach.step(
                         current, now_ros_ns=node.get_clock().now().nanoseconds,

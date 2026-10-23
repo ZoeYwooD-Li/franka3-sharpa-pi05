@@ -30,8 +30,8 @@ def main():
             _require_parameter(node, "teleop_safety_gateway", "allowed_sources", [config.SOURCE])
             _require_parameter(node, "sharpa_driver", "supervised_validation_guard", True)
         def read_feedback(self):
-            # Settle sampling uses the existing 20 Hz timeline.
-            rclpy.spin_once(node, timeout_sec=0.05)
+            # Settle sampling uses the existing 30 Hz timeline.
+            rclpy.spin_once(node, timeout_sec=1/config.ACTION_HZ)
             return feedback.wait()
         def now_monotonic_ns(self): return time.monotonic_ns()
         def now_ros_ns(self): return node.get_clock().now().nanoseconds

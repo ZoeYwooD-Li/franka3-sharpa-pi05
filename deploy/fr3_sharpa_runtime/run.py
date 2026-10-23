@@ -19,10 +19,7 @@ from . import config
 from .runtime import SharpaRuntime
 from .preflight import offline_sanity_check
 
-DEFAULT_PROMPT = (
-    "Pick up a tomato with the right hand, move it to the center, "
-    "let the left hand receive it, and place it in the bowl."
-)
+DEFAULT_PROMPT = config.DEFAULT_PROMPT
 GELLO_REPO = Path(os.environ.get("SHARPA_GELLO_REPO", "/home/user/gello_upper_body_teleop"))
 ROS_PROJECT = GELLO_REPO / "portable_deps/litchi_hardware"
 _observation_worker = None

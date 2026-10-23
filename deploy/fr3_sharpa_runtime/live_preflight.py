@@ -129,7 +129,7 @@ def inspect_live_preflight(node, actions=None, session_id="preflight", *, discov
                 chunk, messages = prepare_messages(actions, session_id, node.get_clock().now().nanoseconds)
                 checks["action_valid"] = {"status": "PASS", "shape": [50, 58], "finite": True,
                                           "execute_preflight": check, "message_frames": len(messages),
-                                          "timestamp_step_ns": 50_000_000, "unit": chunk.unit}
+                                          "timestamp_step_ns": 1_000_000_000 // config.ACTION_HZ, "unit": chunk.unit}
             except Exception as error:
                 checks["action_valid"] = {"status": "FAIL", "reason": str(error)}
             checks["action_valid"]["left_arm_first_target_deltas"] = left_arm_deltas

@@ -27,7 +27,7 @@ from .records import OfflineArmCommand, OfflineChunk, OfflineFrame, OfflineSharp
 
 
 class SharpaActionAdapter:
-    """Build a complete 20Hz, 50-frame offline command chunk."""
+    """Build a complete 30Hz, 50-frame offline command chunk."""
 
     def adapt_chunk(
         self,
