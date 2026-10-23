@@ -1,22 +1,16 @@
 # 文档索引
 
-整理日期：2026-09-29
+当前 Sharpa 实机部署以[根 README](../README.md)和 [runtime 部署说明](../deploy/fr3_sharpa_runtime/README.md)为准。
 
-当前部署操作以根目录的 [FR3_Wuji_pi05部署使用说明.docx](../FR3_Wuji_pi05部署使用说明.docx) 和[中文 README](../README.md)为准。
+| 文档 | 用途 |
+| --- | --- |
+| [Sharpa 部署](../deploy/fr3_sharpa_runtime/README.md) | 全量模型、30 Hz、两终端启动、SDK 与日志 |
+| [Prepare 流程](../deploy/fr3_sharpa_runtime/PREPARE.md) | 初始到位、重新观测、完整 chunk 循环 |
+| [Sharpa 数据转换](../examples/fr3_sharpa/README.md) | 离线 bag 转换和 LeRobot 导出 |
+| [归一化统计](norm_stats.md) | OpenPI 通用归一化说明 |
+| [Docker](docker.md) | OpenPI 通用容器参考 |
+| [远程推理](remote_inference.md) | OpenPI 通用服务与客户端参考 |
+| [上游 README 归档](README_原版_2026-09-29.md) | 通用模型安装与示例，非当前实机启动入口 |
+| [贡献指南](CONTRIBUTING_2026-09-29.md) | 上游开发约定 |
 
-下表日期为本次整理日期，不代表历史内容已重新验证。各文档原有实验日期、更新时间与阶段性结论保留；旧路径和旧命令需结合当前使用说明核对。
-
-| 文档 | 内容 | 整理日期 |
-| --- | --- | --- |
-| [原 README 归档](README_原版_2026-09-29.md) | 原英文说明，含通用安装、基础模型、训练与推理示例 | 2026-09-29 |
-| [部署历史说明](部署_2026-09-29.md) | 现场接口、迁移条件与早期部署记录 | 2026-09-29 |
-| [贡献指南](CONTRIBUTING_2026-09-29.md) | 原项目贡献流程 | 2026-09-29 |
-| [番茄任务数据训练与部署记录](Codex_番茄任务数据训练与部署记录.md) | 数据处理、LoRA 微调方法与实验记录 | 2026-09-29 |
-| [0906 微调记录](0906微调.md) | 早期微调纪要 | 2026-09-29 |
-| [FR3 Wuji 微调检查清单](fr3_wuji_finetune_todo.md) | 分阶段训练与验证事项 | 2026-09-29 |
-| [同事交接与启动指南](同事交接_功能与启动指南.md) | 功能清单与交接记录 | 2026-09-29 |
-| [Docker 说明](docker.md) | 通用容器环境说明 | 2026-09-29 |
-| [归一化统计说明](norm_stats.md) | 训练与推理的归一化统计 | 2026-09-29 |
-| [远程推理说明](remote_inference.md) | 模型服务与远程客户端 | 2026-09-29 |
-
-模块维护说明仍与代码放在一起：[模型适配](../deploy/fr3_wuji_models/README.md)、[慢速](../deploy/fr3_wuji_slow/README.md)、[中速](../deploy/fr3_wuji_medium/README.md)、[快速](../deploy/fr3_wuji_fast/README.md)、[Home 归位](../deploy/fr3_wuji_home/README.md)。
+旧平台专用文档随对应代码移除，需要查阅时使用 Git 历史。Sharpa legacy 后端仅供历史兼容，见 [LEGACY.md](../deploy/fr3_sharpa_runtime/LEGACY.md)；当前执行入口使用 `sdk_direct`。

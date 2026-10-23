@@ -41,7 +41,7 @@ def test_native_58d_full_checkpoint_contract_and_handshake(checkpoint):
         config.validate_policy_metadata(metadata)
 
 
-def test_full_loader_rejects_lora_and_wuji_64d_checkpoint(checkpoint):
+def test_full_loader_rejects_lora_and_foreign_64d_checkpoint(checkpoint):
     params, _ = checkpoint
     path = params / "_METADATA"
     data = json.loads(path.read_text())

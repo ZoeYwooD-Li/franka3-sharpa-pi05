@@ -1,2 +1,0 @@
-# Imported only by the fast arm command smoother; no transitive dependencies.
-ruckig==0.12.2

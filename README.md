@@ -1,169 +1,81 @@
-# OpenPI FR3 双臂 + 双 Sharpa π0.5 番茄协作任务
+# FR3 + Sharpa π0.5 番茄任务部署
 
-更新日期：2026-10-23
+双 FR3 机械臂、双 Sharpa 灵巧手的视觉语言动作模型工程。当前部署使用 **π0.5 全量微调、30 Hz、原生 58 维绝对关节目标**。
 
-本仓库基于 Physical Intelligence 的 OpenPI，面向 **双 FR3 机械臂 + 双 Sharpa 灵巧手** 的番茄双手协作任务：右手抓取并移动到中间，左手摘取番茄，再由左手放入碗中。
+## 当前配置
 
-当前仓库同时保留原有的 FR3 + Wuji 54 维工程。Wuji 配置和部署功能不变；Sharpa 使用独立的 58 维数据协议、模型配置和离线验收流程。
-
-## 当前 Sharpa 部署入口（chunk-base-test）
-
-当前分支的部署为 π0.5 **全量微调**、30 Hz、58D、50 帧 absolute chunk，使用 `sdk_direct`。当前默认权重是外置盘 `sharpa_tomato_ckpt_4000`，配套资产为 `tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz`；已通过真实 GPU 加载及假观测推理，尚未验证实机任务。流程为 policy-first prepare → 实测到位 → 重新观测和推理 → 完整 chunk 执行 → 下一轮；支持有限轮数或持续运行。两终端命令、依赖启动和日志说明见 [Sharpa runtime](deploy/fr3_sharpa_runtime/README.md)。下方训练状态保留早期初始化记录，不能作为当前部署状态。
-
-## 当前状态
-
-- Sharpa 模型配置：`pi05_fr3_sharpa`
-- 模型：π0.5，`action_dim=58`，`action_horizon=50`
-- 动作顺序：左 FR3 7 + 左 Sharpa 22 + 右 FR3 7 + 右 Sharpa 22
-- 输入：三路 RGB、58 维机器人状态、任务文本
-- 以下为早期 LoRA 训练策略记录；当前 fullft 部署以页面上方入口为准：
-  - SigLIP 全量训练
-  - Gemma 2B 主干冻结 + LoRA
-  - Gemma 300M Action Expert 主干冻结 + LoRA
-  - Action Head 全量训练
-  - Timestep MLP 全量训练
-  - AdamW、cosine warmup、关闭 EMA
-- 官方 `pi05_base` checkpoint 已在本机完成真实兼容性验证
-- 已使用 `episode284` 真实 batch 完成 forward/backward、单次 optimizer step、参数和 optimizer state 保存恢复验证
-- 此段记载的是早期初始化阶段，不代表当前部署进度
-
-Sharpa 的训练配置位于 [`src/openpi/training/config.py`](src/openpi/training/config.py)，模型 freeze filter 位于 [`src/openpi/models/pi0_config.py`](src/openpi/models/pi0_config.py)。
-
-## Checkpoint 兼容性
-
-本机 checkpoint 路径：
-
-```text
-/home/user/checkpoints/pi05_base/params
-```
-
-Sharpa 使用 `PartialCheckpointWeightLoader`。官方基础权重的动作投影宽度为 32，Sharpa 为 58，因此只有以下动作投影参数重新初始化：
-
-```text
-action_in_proj/kernel
-
-action_out_proj/bias
-
-action_out_proj/kernel
-```
-
-其余基础参数严格按名称、形状和 dtype 检查。当前验证结果：
-
-```text
-目标参数叶：71
-checkpoint 参数叶：51
-unexpected：0
-非动作投影 shape mismatch：0
-合并后参数叶：71
-```
-
-LoRA adapter 参数是目标 LoRA 结构新增的参数，由目标模型初始化；这不改变 Gemma 主干冻结策略。
-
-在其他机器上使用时，应把 `src/openpi/training/config.py` 中 Sharpa loader 的本地路径替换为可访问的 checkpoint 路径，或改为官方 GCS 路径。
-
-## 训练策略与参数
-
-Sharpa 继承原 `pi05_fr3_wuji` 的训练策略，不更换 model variant：
-
-| 参数 | 当前 Sharpa 值 |
+| 项目 | 配置 |
 | --- | --- |
-| PaliGemma | `gemma_2b_lora` |
-| Action Expert | `gemma_300m_lora` |
-| 学习率 | cosine decay，warmup 1000 步 |
-| peak / end lr | `2.5e-5` / `2.5e-6` |
-| Optimizer | AdamW，`b1=0.9`，`b2=0.95` |
-| weight decay | `1e-10` |
-| gradient clip | `1.0` |
-| batch size | `8` |
-| 训练步数 | `20,000` |
-| checkpoint | 每 `2,000` 步保存，`keep_period=10,000` |
-| EMA | 关闭 |
-| WandB | 关闭 |
+| 模型 | `gemma_2b` + `gemma_300m`，无 LoRA |
+| 输入 | 三路 RGB、58 维实测关节位置、英文任务文本 |
+| 输出 | 每次 50 帧 × 58 维，单位 rad，绝对关节位置 |
+| 关节顺序 | 左臂 7、左手 22、右臂 7、右手 22 |
+| 相机 | 头部 cam0、左腕 cam2、右腕 cam1 |
+| 模型动作与设备下发 | 30 Hz，名义间隔约 33.33 ms |
+| 执行后端 | `sdk_direct`：FR3 Safety Gateway + Sharpa Wave SDK |
 
-训练入口仍然是：
+默认权重位于外置盘，代码仓库不包含权重：
+
+```text
+/media/user/8C0F29AFFD6CD874/sharpa_tomato_ckpt_4000
+```
+
+归一化统计自动读取该 checkpoint 的 `assets/tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz/norm_stats.json`。更换路径时，在两个终端设置相同的 `SHARPA_CHECKPOINT`；不要替换为其他实验的统计。
+
+## 两个终端启动
+
+先按 [runtime 部署说明](deploy/fr3_sharpa_runtime/README.md)启动 ROS、相机和机械臂依赖，准备 Pixi/SDK 环境。
+
+终端一，加载权重、预热并启动推理服务：
 
 ```bash
-uv run --no-sync scripts/train.py pi05_fr3_sharpa \
-  --exp-name <experiment-name> \
-  --log-interval 10
+cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
+./serve.sh
 ```
 
-正式训练前应确认本机 checkpoint、Sharpa 数据目录和 norm stats 路径均可访问。本 README 不代表已经启动过正式训练。
+终端二，下列命令连接设备并驱动机器人：
 
-## Sharpa 数据
-
-ROS bag 转换和 LeRobot 导出工具位于 [`examples/fr3_sharpa/`](examples/fr3_sharpa/)：
-
-- [`convert_rosbag.py`](examples/fr3_sharpa/convert_rosbag.py)：读取 ROS bag，按 58 维协议对齐状态、动作和三路图像
-- [`export_lerobot.py`](examples/fr3_sharpa/export_lerobot.py)：导出 LeRobot v2 数据集
-- [`fr3_sharpa_protocol.py`](src/openpi/policies/fr3_sharpa_protocol.py)：定义关节名称、顺序和 58 维协议
-- [`fr3_sharpa_policy.py`](src/openpi/policies/fr3_sharpa_policy.py)：定义 Sharpa 输入输出变换
-
-已验证的 episode284 数据：
-
-```text
-30 Hz：/home/user/franka_teleop_data/converted/fr3_sharpa_episode284
-20 Hz causal：/home/user/franka_teleop_data/converted/fr3_sharpa_episode284_20hz_causal2
+```bash
+cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
+./runtime.sh --execute --enable-hardware \
+  --prepare-speed-rad-s 0.03 \
+  --execute-speed-scale 0.1 \
+  --num-chunks 0
 ```
 
-30 Hz LeRobot 数据为 1547 帧，nominal FPS 为 30；20 Hz 因果版本为 1031 帧，nominal FPS 为 20。两种版本的时间间隔都没有发现缺帧间隔。
+执行流程：当前观测 → 推理首帧作为 prepare 目标 → 低速到位并稳定 → 重新观测、重新推理 → 衔接并执行完整 chunk → 下一轮。
 
-### 30 Hz 与 20 Hz 结论
+`--num-chunks 0` 持续运行到 Ctrl-C；正整数指定段数。`--execute-speed-scale 0.1` 将每对模型动作点分为 10 步并保持 30 Hz 下发，50 帧主体约 16.37 秒，另加 prepare、首帧衔接、观测及推理时间。没有自动判定番茄任务完成的逻辑。prepare 为关节空间插值，不包含环境碰撞规划。
 
-- 30 Hz 的 50-step action horizon 覆盖约 1.67 秒。
-- 20 Hz 的 50-step action horizon 覆盖 2.5 秒。
-- 当前 30 Hz 版本使用最近样本同步，可能选到目标时刻之后的观测。
-- 20 Hz causal 版本只使用目标时刻之前的最新样本，观测延迟已记录在 `report.json`。
-- 30 Hz 也可以采用同样的 causal 同步，但需要重新生成数据并重新计算 norm stats。
-- 当前 episode284 没有发现由裁剪或缺帧造成的动作不连续；快速动作峰值仍集中在右手抓取、左手摘取等动作变化附近。
+## 检查与验证
 
-这些结论来自 episode284 的离线测量。抓取、移动、摘取和放碗的语义阶段没有写入 bag 标签，因此动作峰值只能作为阶段变化的代理，不能替代独立任务成功率评估。
+以下检查不连接机器人：
 
-## 离线验收
-
-验收内容包括：
-
-- 本地 `pi05_base` 权重初始化
-- episode284 真实 batch 的 forward/backward
-- SigLIP、Gemma 2B LoRA、Gemma 300M LoRA、Action Head、Timestep MLP 梯度统计
-- 单次正式 optimizer step
-- 可训练参数更新、冻结参数不更新
-- 参数、optimizer state、global step 保存恢复
-- 恢复后确定性 forward
-- 20 Hz / 30 Hz 数据 FPS、重复率、时间戳年龄和动作峰值对比
-
-本机原始报告位于：
-
-```text
-/home/user/franka_teleop_data/converted/fr3_sharpa_episode284/report.json
-/home/user/franka_teleop_data/converted/fr3_sharpa_episode284_20hz_causal2/report.json
+```bash
+cd /home/user/sharpa-pi05
+JAX_PLATFORMS=cpu .venv/bin/python -m pytest deploy/fr3_sharpa_runtime/tests -q
+bash deploy/fr3_sharpa_runtime/serve.sh --check-only
+bash deploy/fr3_sharpa_runtime/serve.sh --smoke-only
 ```
 
-大型数据、视频和 checkpoint 不提交到 GitHub。
+当前 4000 步权重已通过真实 GPU 加载及假观测推理，输出有限的 `(50, 58)`。这证明模型加载与动作接口可用，不代表现场任务成功。执行记录默认位于 `~/.local/state/fr3_sharpa_runtime/execution_traces/`。
 
-## 原 Wuji 工程
+原始转换器数据为 state116/action58；训练时选择实测位置并重排为 canonical 58D。实时部署输入已经是 canonical 58D，不能再套原始数据重排或重复添加当前关节位置。数据 normal/speedup 的区别、训练代码对应关系及尚未确认的实验信息见 [runtime 说明](deploy/fr3_sharpa_runtime/README.md)。
 
-原有 Wuji 配置仍为 54 维、30 Hz、50-step action horizon。其训练、服务和硬件执行入口保持不变。原有部署说明见：
+## 代码导航
 
-- [FR3_Wuji_pi05部署使用说明.docx](FR3_Wuji_pi05部署使用说明.docx)
-- [番茄任务数据训练与部署记录](docs/Codex_番茄任务数据训练与部署记录.md)
-- [文档索引](docs/README.md)
-
-切换 Wuji 权重时，仍需使用对应的 54 维适配器、norm stats 和部署入口，不要将 Wuji checkpoint 直接当作 Sharpa 58 维 checkpoint 使用。
-
-## 目录
-
-| 路径 | 内容 |
+| 目录 | 用途 |
 | --- | --- |
-| `src/openpi/models/` | π0、π0.5 和相关模型实现 |
-| `src/openpi/training/` | 训练配置、数据加载、归一化和 checkpoint 逻辑 |
-| `src/openpi/policies/` | Wuji、Sharpa 以及其他平台的输入输出变换 |
-| `examples/fr3_sharpa/` | Sharpa ROS bag 转换、导出和检查工具 |
-| `examples/fr3_wuji/` | 原 Wuji 数据转换和检查工具 |
-| `scripts/` | 训练、统计、数据准备和辅助脚本 |
-| `deploy/` | 原 Wuji 模型服务和硬件执行入口 |
-| `docs/` | 训练记录、部署说明和历史资料 |
+| `deploy/fr3_sharpa_runtime/` | 当前模型服务、prepare、SDK 执行和运行记录 |
+| `src/openpi/policies/fr3_sharpa_policy.py` | 58D 输入输出变换 |
+| `src/openpi/policies/fr3_sharpa_protocol.py` | Sharpa 关节名称和协议 |
+| `examples/fr3_sharpa/` | Sharpa 离线数据转换、导出与比较工具 |
+| `src/openpi/training/` | 通用训练框架及保留的 Sharpa 历史训练配置 |
+| `src/openpi/models/` | OpenPI 模型实现 |
+| `scripts/` | 通用训练、统计和模型服务入口 |
+| `packages/openpi-client/` | WebSocket 客户端 |
+| `docs/` | 通用 OpenPI 参考资料与文档索引 |
 
-## 许可证
+当前全量模型的训练配方参考独立工程 `/home/user/tomato-openpi`。本仓库历史 Sharpa LoRA 配置不用于加载当前全量权重。旧平台部署和实验代码已从当前分支移除，可通过 Git 历史查阅。
 
-项目代码许可证见 [LICENSE](LICENSE)，Gemma 相关条款见 [LICENSE_GEMMA.txt](LICENSE_GEMMA.txt)。
+权重、训练数据、运行日志和本机构建产物不提交 Git。许可证见 [LICENSE](LICENSE) 和 [LICENSE_GEMMA.txt](LICENSE_GEMMA.txt)。

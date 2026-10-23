@@ -20,7 +20,6 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
-import openpi.policies.fr3_wuji_policy as fr3_wuji_policy
 import openpi.policies.fr3_sharpa_policy as fr3_sharpa_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -387,54 +386,6 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class LeRobotFr3WujiDataConfig(DataConfigFactory):
-    """Configures online transforms for the legacy FR3/Wuji LeRobot dataset."""
-
-    extra_delta_transform: bool = False
-    action_sequence_keys: Sequence[str] = ("action",)
-    lerobot_datasets: Sequence[LeRobotDatasetSpec] = ()
-    action_hz: float | None = None
-    video_backend: str | None = None
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image": "observation.images.cam0",
-                        "observation/left_wrist_image": "observation.images.cam1",
-                        "observation/right_wrist_image": "observation.images.cam2",
-                        "observation/state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
-        data_transforms = _transforms.Group(
-            inputs=[fr3_wuji_policy.Fr3WujiInputs(model_type=model_config.model_type)],
-            outputs=[fr3_wuji_policy.Fr3WujiOutputs()],
-        )
-        if self.extra_delta_transform:
-            delta_action_mask = _transforms.make_bool_mask(7, -20, 7, -20)
-            data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-            )
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=ModelTransformFactory()(model_config),
-            action_sequence_keys=self.action_sequence_keys,
-            lerobot_datasets=self.lerobot_datasets,
-            action_hz=self.action_hz,
-            video_backend=self.video_backend,
         )
 
 
@@ -891,45 +842,6 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
-        name="pi05_fr3_wuji",
-        # LoRA fine-tuning so training fits on a single 32GB GPU (full fine-tuning of
-        # pi05 needs ~50GiB just to initialize params + Adam states + EMA).
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=54,
-            action_horizon=50,
-            max_token_len=256,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ),
-        # Produced by examples/fr3_wuji/convert_dataset.py: the 65 captures merged into one
-        # standard LeRobot dataset. State stays 108-dim and actions keep their original
-        # joint order, so the 54-dim slicing and reordering still happen in Fr3WujiInputs.
-        data=LeRobotFr3WujiDataConfig(
-            repo_id="fr3_wuji/tomato",
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=True,
-        ),
-        weight_loader=weight_loaders.PartialCheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        # LoRA freeze filter must match the model variants above.
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=54,
-            action_horizon=50,
-            max_token_len=256,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        # EMA is turned off for LoRA fine-tuning.
-        ema_decay=None,
-        batch_size=8,
-        num_workers=8,
-        num_train_steps=20_000,
-        save_interval=2_000,
-        keep_period=10_000,
-        wandb_enabled=False,
-    ),
-    TrainConfig(
         name="pi05_fr3_sharpa",
         project_name="sharpa-pi05-30hz",
         model=pi0_config.Pi0Config(
@@ -1291,100 +1203,6 @@ _CONFIGS = [
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
 ]
-
-# Independent assets/checkpoints for the curated dataset with source episode 58 removed.
-_fr3_wuji_base = next(config for config in _CONFIGS if config.name == "pi05_fr3_wuji")
-_CONFIGS.append(
-    dataclasses.replace(
-        _fr3_wuji_base,
-        name="pi05_fr3_wuji_60ep",
-        data=dataclasses.replace(
-            _fr3_wuji_base.data,
-            repo_id="fr3_wuji/tomato_standard_quality_60ep",
-        ),
-    )
-)
-
-# Local 2026-09-18 A/B collection. Source media and observations are 30 Hz;
-# future action targets are selected on a nearest-frame 20 Hz time grid. This
-# gives a 50-step, 2.5-second policy trajectory without re-encoding the videos.
-_FR3_WUJI_0918_ROOT = "/home/descfly/lpy/Convert_data/outputs/fr3_wuji/0918"
-_CONFIGS.append(
-    dataclasses.replace(
-        _fr3_wuji_base,
-        name="pi05_fr3_wuji_20hz",
-        data=dataclasses.replace(
-            _fr3_wuji_base.data,
-            repo_id="fr3_wuji/0918_20hz",
-            assets=AssetsConfig(asset_id="fr3_wuji/0918_20hz"),
-            action_hz=20.0,
-            video_backend="pyav",
-            lerobot_datasets=(
-                LeRobotDatasetSpec(
-                    repo_id="fr3_wuji/tomato_A_cleaned",
-                    root=f"{_FR3_WUJI_0918_ROOT}/tomato_A_cleaned",
-                    weight=0.7,
-                ),
-                LeRobotDatasetSpec(
-                    repo_id="fr3_wuji/tomato_B_cleaned",
-                    root=f"{_FR3_WUJI_0918_ROOT}/tomato_B_cleaned",
-                    weight=0.3,
-                ),
-            ),
-        ),
-        wandb_enabled=False,
-    )
-)
-
-# Joint training on all 65 previous episodes and the 60 curated new episodes.
-_CONFIGS.append(
-    dataclasses.replace(
-        _fr3_wuji_base,
-        name="pi05_fr3_wuji_125ep",
-        data=dataclasses.replace(
-            _fr3_wuji_base.data,
-            repo_id="fr3_wuji/tomato_joint_125ep",
-        ),
-    )
-)
-
-# Weighted, non-copying view of the same 65 + 60 episodes. The shared norm was
-# computed once over every frame; weights affect training sampling only.
-_CONFIGS.append(
-    dataclasses.replace(
-        _fr3_wuji_base,
-        name="pi05_fr3_wuji_weighted",
-        data=dataclasses.replace(
-            _fr3_wuji_base.data,
-            repo_id="fr3_wuji/tomato_weighted_40_60",
-            assets=AssetsConfig(asset_id="fr3_wuji/tomato_weighted_40_60"),
-            lerobot_datasets=(
-                LeRobotDatasetSpec(repo_id="fr3_wuji/65_0907", weight=0.4),
-                LeRobotDatasetSpec(repo_id="fr3_wuji/60_0909", weight=0.6),
-            ),
-        ),
-    )
-)
-
-# Unified normalization/training view of the three disjoint tomato datasets
-# collected through 2026-09-11. Norm statistics use every frame once; these
-# weights only control training sampling and can be changed later.
-_CONFIGS.append(
-    dataclasses.replace(
-        _fr3_wuji_base,
-        name="pi05_fr3_wuji_269ep",
-        data=dataclasses.replace(
-            _fr3_wuji_base.data,
-            repo_id="fr3_wuji/tomato_42_102_125",
-            assets=AssetsConfig(asset_id="fr3_wuji/tomato_42_102_125"),
-            lerobot_datasets=(
-                LeRobotDatasetSpec(repo_id="fr3_wuji/42_high_0911", weight=1.0),
-                LeRobotDatasetSpec(repo_id="fr3_wuji/102_0911", weight=1.0),
-                LeRobotDatasetSpec(repo_id="fr3_wuji/125_0909", weight=1.0),
-            ),
-        ),
-    )
-)
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

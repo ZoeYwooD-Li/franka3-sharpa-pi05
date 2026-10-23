@@ -1,6 +1,6 @@
 """Joint protocol for a dual FR3 + dual Sharpa Wave workcell.
 
-This module is deliberately independent from the Wuji policy.  It records the
+This module is specific to the Sharpa joint protocol. It records the
 physical order used by the Sharpa dataset and makes the distinction between
 measured state and commanded action explicit.
 """

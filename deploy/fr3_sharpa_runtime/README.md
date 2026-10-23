@@ -25,7 +25,7 @@ Sharpa Wave SDK
 
 `full_finetune.py` 构建专用推理配置：`gemma_2b` + `gemma_300m`，不含 LoRA 和 delta 动作转换。该配置名 `pi05_fr3_sharpa_ab4_normal_rgb_fullft_absolute_30hz_deploy` 是本机推理适配标识，不冒充权重的原始训练配置名。checkpoint 51 项参数叶无 LoRA；必须使用配套的 58D state/actions 统计。原始训练 manifest 不在权重目录内。
 
-Wuji `model_30000v2` 同样用全量 Gemma，但其 64→54 维映射不用于 Sharpa。Sharpa 始终输出 `[左臂7, 左手22, 右臂7, 右手22]`，不补零、不重复加当前状态。实时输入已经是 canonical 58D，不能再套原始转换器的 116D 重排。
+当前模型为原生 58D，不采用其他平台的 64→54 维映射。Sharpa 始终输出 `[左臂7, 左手22, 右臂7, 右手22]`，不补零、不重复加当前状态。实时输入已经是 canonical 58D，不能再套原始转换器的 116D 重排。
 
 参考训练工程 `/home/user/tomato-openpi` 的 fullft recipe 和 multimodal adapter：原始 state116 按 `[0:7,28:50,14:21,72:94]` 取实测位置；原始 action58 按 `[0:7,14:36,7:14,36:58]` 重排到 canonical 58D，然后做 absolute 归一化。训练和实时相机约定为头部 `cam0`、左腕 `cam2`、右腕 `cam1`。默认 prompt 取该训练工程的番茄任务示例，可通过执行端 `--prompt` 指定实际训练文本。
 
