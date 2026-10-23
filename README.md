@@ -39,13 +39,15 @@ cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
 cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
 ./runtime.sh --execute --enable-hardware \
   --prepare-speed-rad-s 0.03 \
-  --execute-speed-scale 0.1 \
+  --speed slow \
   --num-chunks 0
 ```
 
 执行流程：当前观测 → 推理首帧作为 prepare 目标 → 低速到位并稳定 → 重新观测、重新推理 → 衔接并执行完整 chunk → 下一轮。
 
 `--num-chunks 0` 持续运行到 Ctrl-C；正整数指定段数。`--execute-speed-scale 0.1` 将每对模型动作点分为 10 步并保持 30 Hz 下发，50 帧主体约 16.37 秒，另加 prepare、首帧衔接、观测及推理时间。没有自动判定番茄任务完成的逻辑。prepare 为关节空间插值，不包含环境碰撞规划。
+
+速度可选 `--speed slow`（0.1）、`medium`（0.5）、`fast`（1.0），共用同一执行器。参数含义及当前功能边界见 [部署结构](deploy/fr3_sharpa_runtime/ARCHITECTURE.md)。模型层负责训练方式和参数结构，执行层只使用统一动作契约。
 
 ## 检查与验证
 

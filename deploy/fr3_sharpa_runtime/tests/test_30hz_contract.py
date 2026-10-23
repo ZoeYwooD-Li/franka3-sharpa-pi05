@@ -27,7 +27,8 @@ def test_policy_handshake_rejects_old_20hz_service(monkeypatch):
                 "norm_stats": str(config.NORM_STATS), "action_dim": 58,
                 "action_horizon": 50, "action_hz": 30, "model_finetune_mode": "full",
                 "paligemma_variant": "gemma_2b", "action_expert_variant": "gemma_300m",
-                "action_representation": "absolute_joint_position", "warmed_up": True}
+                "action_representation": "absolute_joint_position", "warmed_up": True,
+                "action_order": config.ACTION_ORDER, "camera_mapping": config.CAMERA_MAPPING}
     config.validate_policy_metadata(metadata)
     metadata["action_hz"] = 20
     with pytest.raises(ValueError, match="action_hz"):

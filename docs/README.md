@@ -5,6 +5,8 @@
 | 文档 | 用途 |
 | --- | --- |
 | [Sharpa 部署](../deploy/fr3_sharpa_runtime/README.md) | 全量模型、30 Hz、两终端启动、SDK 与日志 |
+| [Sharpa 部署结构](../deploy/fr3_sharpa_runtime/ARCHITECTURE.md) | 模型层、公共执行层和三档速度 |
+| [保留的 Wuji 设计参考](reference_wuji_architecture.md) | 历史职责划分和轨迹方案，非当前运行入口 |
 | [Prepare 流程](../deploy/fr3_sharpa_runtime/PREPARE.md) | 初始到位、重新观测、完整 chunk 循环 |
 | [Sharpa 数据转换](../examples/fr3_sharpa/README.md) | 离线 bag 转换和 LeRobot 导出 |
 | [归一化统计](norm_stats.md) | OpenPI 通用归一化说明 |

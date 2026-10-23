@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from deploy.fr3_sharpa_runtime import config
-from deploy.fr3_sharpa_runtime.full_finetune import checkpoint_contract
+from deploy.fr3_sharpa_runtime.model_loader import checkpoint_contract
 
 
 @pytest.fixture
@@ -37,7 +37,9 @@ def test_native_58d_full_checkpoint_contract_and_handshake(checkpoint):
     metadata["warmed_up"] = True
     config.validate_policy_metadata(metadata)
     metadata["model_finetune_mode"] = "lora"
-    with pytest.raises(ValueError, match="model_finetune_mode"):
+    config.validate_policy_metadata(metadata)  # Training mode is informational to execution.
+    metadata["normalization_sha256"] = "wrong"
+    with pytest.raises(ValueError, match="normalization_sha256"):
         config.validate_policy_metadata(metadata)
 
 
@@ -79,7 +81,7 @@ def test_training_contract_rejects_delta_or_lora():
 
 
 def test_full_inference_transform_preserves_canonical_absolute_targets(checkpoint):
-    from deploy.fr3_sharpa_runtime.full_finetune import build_config
+    from deploy.fr3_sharpa_runtime.model_loader import build_config
     training = build_config()
     config.validate_training_contract(training)
     data = training.data.create(training.assets_dirs, training.model)

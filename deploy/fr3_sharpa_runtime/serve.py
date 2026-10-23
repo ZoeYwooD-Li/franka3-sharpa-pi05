@@ -20,7 +20,7 @@ def main() -> None:
     modes.add_argument("--smoke-only", action="store_true", help="Load GPU model, infer dummy observations and exit; no hardware")
     parser.add_argument("--report", type=Path, help="Save checkpoint/smoke validation as JSON")
     args = parser.parse_args()
-    from .full_finetune import checkpoint_contract, build_config
+    from .model_loader import checkpoint_contract, build_config
 
     metadata = checkpoint_contract()
     if args.check_only:

@@ -23,7 +23,7 @@ Sharpa Wave SDK
 └── assets/tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz/norm_stats.json
 ```
 
-`full_finetune.py` 构建专用推理配置：`gemma_2b` + `gemma_300m`，不含 LoRA 和 delta 动作转换。该配置名 `pi05_fr3_sharpa_ab4_normal_rgb_fullft_absolute_30hz_deploy` 是本机推理适配标识，不冒充权重的原始训练配置名。checkpoint 51 项参数叶无 LoRA；必须使用配套的 58D state/actions 统计。原始训练 manifest 不在权重目录内。
+`model_loader.py` 构建专用推理配置：`gemma_2b` + `gemma_300m`，不含 LoRA 和 delta 动作转换。该配置名 `pi05_fr3_sharpa_ab4_normal_rgb_fullft_absolute_30hz_deploy` 是本机推理适配标识，不冒充权重的原始训练配置名。checkpoint 51 项参数叶无 LoRA；必须使用配套的 58D state/actions 统计。原始训练 manifest 不在权重目录内。
 
 当前模型为原生 58D，不采用其他平台的 64→54 维映射。Sharpa 始终输出 `[左臂7, 左手22, 右臂7, 右手22]`，不补零、不重复加当前状态。实时输入已经是 canonical 58D，不能再套原始转换器的 116D 重排。
 
@@ -50,15 +50,17 @@ export SHARPA_NORM_STATS=/配套的/norm_stats.json
 
 旧 `litchibot` guarded runtime、permit、handoff 和 acquisition 代码保留为 legacy fallback，当前 sdk_direct 执行不调用它们。
 
+模型层与执行层分开：LoRA/full 的参数结构差异由模型层处理，不需要两套机器人执行程序。当前已验证的加载配置仍是这份全量权重；执行端不再把训练方式当作运动准入条件。详见 [部署结构与速度方案](ARCHITECTURE.md)。
+
 ## 文件职责
 
 | 文件/组 | 作用 |
 |---|---|
 | `run.py`, `runtime.py`, `config.py` | CLI、policy 请求和运行入口 |
-| `full_finetune.py` | 全量 58D absolute 模型配置及 checkpoint 契约 |
+| `model_loader.py` | 全量 58D absolute 模型配置及 checkpoint 契约 |
 | `protocol.py`, `action_adapter.py`, `records.py` | 58D action 协议和 adapter |
 | `ros_observation.py`, `observation_worker.py`, `feedback.py` | 实时 ROS observation / feedback |
-| `policy_prepare.py` | policy-first 慢速 prepare 和 chunk 调度 |
+| `policy_prepare.py`, `profiles.py` | prepare、chunk 调度与 slow/medium/fast 速度预设 |
 | `sdk_direct.py`, `sdk_direct_motion_ros.py` | 当前 Sharpa SDK direct 后端 |
 | `execution_trace.py` | sdk_direct 每个 chunk 的复盘记录 |
 | `ros_transport.py`, `motion_worker.py` | ROS Safety Gateway 边界和 worker IPC |
@@ -109,7 +111,7 @@ cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
   --execute \
   --enable-hardware \
   --prepare-speed-rad-s 0.03 \
-  --execute-speed-scale 0.1 \
+  --speed slow \
   --num-chunks 0
 ```
 
@@ -117,6 +119,7 @@ cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
 
 执行链路：当前实测状态和三路图像 → 首次推理只取首帧作 prepare 目标 → 低速到位并稳定 → 重新采集 → 重新推理 → 从实测姿态低速衔接新首帧 → 完整执行 50×58 chunk → 重新采集 → 下一轮推理与执行。
 
+- `--speed slow/medium/fast`：选择 0.1/0.5/1.0 的时间倍率，使用同一执行器；不与 `--execute-speed-scale` 混用。三档均为串行 30 Hz 下发，不代表已实现 RTG/Ruckig。
 - `--num-chunks 0`：持续运行到 Ctrl-C；`--num-chunks 2` 重现两段试验；任意正整数指定段数。没有自动识别任务完成的逻辑。
 - `--prepare-speed-rad-s 0.03`：初始 prepare 和每段首帧衔接的关节速度。
 - `--execute-speed-scale 0.1`：相邻 policy target 间分为 10 步，设备仍按 30 Hz 下发。50 帧主体为 491 个下发点，约 16.37 秒，另外加上首帧衔接和推理/观测时间。非整数倒数的倍率向更慢一侧取整。默认 `1.0` 保留模型原速。

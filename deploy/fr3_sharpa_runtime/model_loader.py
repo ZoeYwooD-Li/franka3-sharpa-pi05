@@ -1,4 +1,4 @@
-"""Native 58D full-finetune inference, using checkpoint-owned absolute stats.
+"""Shared model-loading boundary; current profile is native 58D full-finetune.
 
 The inference adapter accepts already-canonical live positions. Converter
 116D storage is reduced/reordered during training, not applied a second time
@@ -53,8 +53,8 @@ def checkpoint_contract():
         "action_expert_variant": "gemma_300m", "action_dim": config.ACTION_DIM,
         "action_horizon": config.ACTION_HORIZON, "action_hz": config.ACTION_HZ,
         "action_representation": "absolute_joint_position",
-        "action_order": ["left_arm_7", "left_hand_22", "right_arm_7", "right_hand_22"],
-        "camera_mapping": {"head": "cam0", "left_wrist": "cam2", "right_wrist": "cam1"},
+        "action_order": config.ACTION_ORDER,
+        "camera_mapping": config.CAMERA_MAPPING,
         "params_leaves": len(entries), "warmed_up": False,
     }
 

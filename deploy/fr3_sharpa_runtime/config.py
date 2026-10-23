@@ -31,6 +31,8 @@ SHARPA_LEFT_TOPIC = "/teleop/sharpa/left/openpi_target"
 SHARPA_RIGHT_TOPIC = "/teleop/sharpa/right/openpi_target"
 STATE_DIM = ACTION_DIM
 CHUNK_LENGTH = ACTION_HORIZON
+ACTION_ORDER = ["left_arm_7", "left_hand_22", "right_arm_7", "right_hand_22"]
+CAMERA_MAPPING = {"head": "cam0", "left_wrist": "cam2", "right_wrist": "cam1"}
 EXECUTION_TRACE_DIR = Path("/home/user/.local/state/fr3_sharpa_runtime/execution_traces")
 
 
@@ -57,9 +59,17 @@ def validate_policy_metadata(metadata):
     expected = {"config_name": CONFIG_NAME, "checkpoint": str(require_checkpoint()),
                 "norm_stats": str(NORM_STATS), "action_dim": ACTION_DIM,
                 "action_horizon": ACTION_HORIZON, "action_hz": ACTION_HZ,
-                "model_finetune_mode": "full", "paligemma_variant": "gemma_2b",
-                "action_expert_variant": "gemma_300m",
-                "action_representation": "absolute_joint_position", "warmed_up": True}
+                "action_representation": "absolute_joint_position", "warmed_up": True,
+                "action_order": ACTION_ORDER, "camera_mapping": CAMERA_MAPPING}
+    # Robot execution depends on physical actions and checkpoint identity,
+    # not on whether the model was trained with adapters or full parameters.
+    manifest = CHECKPOINT / "params/manifest.ocdbt"
+    if manifest.is_file():
+        import hashlib
+        expected["checkpoint_manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if NORM_STATS.is_file():
+        import hashlib
+        expected["normalization_sha256"] = hashlib.sha256(NORM_STATS.read_bytes()).hexdigest()
     for key, value in expected.items():
         if metadata.get(key) != value:
             raise ValueError(f"Policy server {key}={metadata.get(key)!r} does not match deployment {value!r}")

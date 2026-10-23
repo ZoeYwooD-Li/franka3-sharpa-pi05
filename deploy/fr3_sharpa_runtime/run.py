@@ -344,8 +344,9 @@ def run_preflight_only(args) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("dry-run", "ros-test", "preflight-only", "prepare", "execute", "handoff-verify"), default="dry-run")
+    parser.add_argument("--mode", choices=("dry-run", "ros-test", "preflight-only", "prepare", "execute", "handoff-verify", "check"), default="dry-run")
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check", action="store_true", help="Print model/execution settings without ROS, SDK or model loading")
     modes.add_argument("--execute", action="store_true", help="Alias for --mode execute; requires --enable-hardware")
     modes.add_argument("--preflight-only", action="store_true", help="Inspect live graph, feedback and policy without command publishers")
     modes.add_argument("--prepare", action="store_true", help="Verify configured task pose and settling; motion backend pending")
@@ -357,8 +358,11 @@ def main() -> None:
                         help="Execute-only: slowly approach initial policy first target through existing guards, then re-infer")
     parser.add_argument("--prepare-speed-rad-s", type=float, default=0.03,
                         help="Joint-space approach speed (rad/s); native guarded limits remain authoritative")
-    parser.add_argument("--execute-speed-scale", type=float, default=1.0,
-                        help="sdk_direct chunk time scale in (0,1]; 0.1 emits ten interpolation steps per policy step")
+    speeds = parser.add_mutually_exclusive_group()
+    speeds.add_argument("--speed", choices=("slow", "medium", "fast"),
+                        help="Sharpa time-stretch preset; independent of the checkpoint training method")
+    speeds.add_argument("--execute-speed-scale", type=float,
+                       help="Custom time scale in (0,1]; alternative to --speed; default is fast (1.0)")
     parser.add_argument("--num-chunks", type=int, default=1,
                         help="Number of full 50-frame chunks after prepare; 0 repeats until Ctrl-C")
     parser.add_argument("--policy-url", default=config.POLICY_URL)
@@ -371,6 +375,30 @@ def main() -> None:
     parser.add_argument("--execution-trace-dir", type=Path, default=config.EXECUTION_TRACE_DIR,
                         help="Directory for sdk_direct per-chunk JSON execution traces")
     args = parser.parse_args()
+    from .profiles import resolve_speed
+    profile = resolve_speed(args.speed, args.execute_speed_scale)
+    args.speed = profile.name
+    args.execute_speed_scale = profile.execute_speed_scale
+    if args.check:
+        if args.mode != "dry-run":
+            parser.error("Use --check or --mode, not both")
+        args.mode = "check"
+    if args.mode == "check":
+        if (args.enable_hardware or args.execute or args.preflight_only or args.prepare
+                or args.handoff_verify or args.episode_parquet):
+            parser.error("check does not accept hardware, live modes or recorded inputs")
+        if (not np.isfinite(args.execute_speed_scale) or not 0 < args.execute_speed_scale <= 1
+                or not np.isfinite(args.prepare_speed_rad_s) or args.prepare_speed_rad_s <= 0
+                or args.num_chunks < 0):
+            parser.error("Invalid speed, prepare speed or chunk count")
+        print(json.dumps({"mode": "check", "hardware_output": False,
+                          "speed": args.speed, "execute_speed_scale": args.execute_speed_scale,
+                          "prepare_speed_rad_s": args.prepare_speed_rad_s,
+                          "num_chunks": args.num_chunks, "action_hz": config.ACTION_HZ,
+                          "action_shape": [config.ACTION_HORIZON, config.ACTION_DIM],
+                          "checkpoint": str(config.CHECKPOINT), "policy_url": args.policy_url,
+                          "sharpa_backend": args.sharpa_backend}, indent=2))
+        return
     if args.execute or args.preflight_only or args.prepare or args.handoff_verify:
         if args.mode != "dry-run":
             parser.error("Use a mode flag or --mode, not both")

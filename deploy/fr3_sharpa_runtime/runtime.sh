@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Offline inspection must work without the robot workstation or ROS overlay.
+previous=""
+for argument in "$@"; do
+  if [[ "$argument" == --check || "$argument" == --help || "$argument" == -h || "$argument" == --mode=check || ( "$previous" == --mode && "$argument" == check ) ]]; then
+    cd "$ROOT"
+    exec uv run --no-sync python -m deploy.fr3_sharpa_runtime.run "$@"
+  fi
+  previous="$argument"
+done
 GELLO="${SHARPA_GELLO_REPO:-/home/user/gello_upper_body_teleop}"
 DOMAIN="$(awk -F= '$1 == "TELEOP_ROS_DOMAIN_ID" {print $2; exit}' "$GELLO/docker/.env")"
 [[ "$DOMAIN" =~ ^[0-9]+$ ]] || { echo "Missing TELEOP_ROS_DOMAIN_ID in docker/.env" >&2; exit 1; }
