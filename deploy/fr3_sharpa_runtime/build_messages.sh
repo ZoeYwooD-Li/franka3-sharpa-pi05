@@ -2,6 +2,7 @@
 # Build message types only. Does not start ROS nodes or connect to hardware.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$ROOT/deploy/fr3_sharpa_runtime/env.sh"
 GELLO="${SHARPA_GELLO_REPO:-/home/user/gello_upper_body_teleop}"
 BUILD_ROOT="$ROOT/.deployment/sharpa_ros_messages"
 SOURCE="$GELLO/ros_ws/src/teleop_interfaces"

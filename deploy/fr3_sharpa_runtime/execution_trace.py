@@ -36,7 +36,7 @@ def observation_metadata(observation: dict) -> dict:
     for key, value in observation.items():
         if key.startswith("observation/") and isinstance(value, np.ndarray):
             result[key] = {"shape": list(value.shape), "dtype": str(value.dtype)}
-        elif key in {"prompt", "_captured_monotonic_ns", "_topic_stamp_ns", "_timing"}:
+        elif key in {"prompt", "_captured_monotonic_ns", "_topic_stamp_ns", "_timing", "_alignment"}:
             result[key] = _json_value(value)
     return result
 
@@ -118,12 +118,14 @@ class ExecutionTraceWriter:
         }
 
     def begin_chunk(self, *, chunk_index: int, metadata: dict, observation_before: dict,
-                    actions: np.ndarray, adapted_chunk) -> str:
+                    actions: np.ndarray, adapted_chunk, execute_steps=50) -> str:
         """Persist inputs before hardware output starts."""
         payload = self._base_payload(
             chunk_index=chunk_index, metadata=metadata,
             observation_before=observation_before, actions=actions,
             adapted_chunk=adapted_chunk)
+        payload["planned_execute_steps"] = execute_steps
+        payload["planned_action_indices"] = [0, execute_steps - 1]
         destination = self.directory / f"{self.trace_id}-chunk{chunk_index:03d}.json"
         temporary = destination.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")

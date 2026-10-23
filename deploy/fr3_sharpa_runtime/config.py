@@ -33,7 +33,8 @@ STATE_DIM = ACTION_DIM
 CHUNK_LENGTH = ACTION_HORIZON
 ACTION_ORDER = ["left_arm_7", "left_hand_22", "right_arm_7", "right_hand_22"]
 CAMERA_MAPPING = {"head": "cam0", "left_wrist": "cam2", "right_wrist": "cam1"}
-EXECUTION_TRACE_DIR = Path("/home/user/.local/state/fr3_sharpa_runtime/execution_traces")
+EXECUTION_TRACE_DIR = Path(os.environ.get(
+    "SHARPA_EXECUTION_TRACE_DIR", str(Path.home() / ".local/state/fr3_sharpa_runtime/execution_traces")))
 
 
 def require_checkpoint() -> Path:

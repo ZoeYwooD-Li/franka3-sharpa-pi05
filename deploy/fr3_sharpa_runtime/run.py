@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import atexit
 import base64
-import io
 import json
 import os
 from pathlib import Path
@@ -26,24 +25,10 @@ _observation_worker = None
 _observation_overlay = None
 
 
-def load_sample(path: Path, prompt: str) -> dict:
+def load_sample(path: Path, prompt: str, frame: int = 0) -> dict:
     """Offline LeRobot sample for dry-run and ros-test only."""
-    import pyarrow.parquet as pq
-    from PIL import Image
-
-    table = pq.read_table(path).slice(0, 1)
-
-    def image(key):
-        return np.asarray(Image.open(io.BytesIO(table[key][0].as_py()["bytes"])).convert("RGB"))
-
-    return {
-        "observation/state": np.asarray(table["observation.state"][0].as_py(), dtype=np.float32),
-        "observation/image": image("observation.images.cam0"),
-        # Match the physical rig and LeRobotFr3SharpaDataConfig.
-        "observation/left_wrist_image": image("observation.images.cam2"),
-        "observation/right_wrist_image": image("observation.images.cam1"),
-        "prompt": prompt,
-    }
+    from .dataset_sample import load_sample as read_sample
+    return read_sample(path, prompt, frame)
 
 
 def _start_observation_worker(overlay: Path):
@@ -98,6 +83,7 @@ def live_observation(overlay: Path, prompt: str) -> dict:
         "prompt": prompt,
         "_captured_monotonic_ns": snapshot["captured_monotonic_ns"],
         "_topic_stamp_ns": snapshot["topic_stamp_ns"],
+        "_alignment": snapshot.get("alignment", {}),
     }
     observation["_timing"] = {**snapshot.get("timing", {}), **snapshot.get("serialization_timing", {}),
                               "ros_boundary_return_monotonic_ns": boundary_return_ns,
@@ -142,7 +128,7 @@ def observation_after_completion(args, report):
 
 
 def execute_policy_prepare(args):
-    """Explicit hardware path: first target approach, re-infer, then full chunks."""
+    """Explicit hardware path: Home/first target, then repeated prediction prefixes."""
     import shlex
     from .motion_worker import MotionWorker
     from .policy_prepare import prepare_and_run_chunks
@@ -158,6 +144,10 @@ def execute_policy_prepare(args):
     inner = (f"source {shlex.quote(str(setup))}; "
              f"export PYTHONPATH={shlex.quote(repo)}:{shlex.quote(str(GELLO_REPO))}:{shlex.quote(str(core))}:\"${{PYTHONPATH:-}}\"; "
              f"exec python -m {worker_module} --enable-hardware")
+    home_arms = home_metadata = None
+    if args.sharpa_backend == "sdk_direct" and getattr(args, "initialization", "policy") == "home":
+        from .home_pose import load_home
+        home_arms, home_metadata = load_home(args.home_poses, args.home_task, hand_path=args.hand_home)
     worker = None
     trace_writer = (ExecutionTraceWriter(args.execution_trace_dir)
                     if args.sharpa_backend == "sdk_direct" else None)
@@ -194,12 +184,12 @@ def execute_policy_prepare(args):
                     current = live_observation(args.ros_overlay, args.prompt)
             raise RuntimeError("Observation expired during inference; no new target/chunk will be sent")
         initial = live_observation(args.ros_overlay, args.prompt)
-        # Infer and validate freshness before starting any command-capable worker.
-        first = infer(initial)
+        # Home mode first settles at the fixed pose; policy mode retains its warmup inference.
+        first = infer(initial) if home_arms is None else None
         initial_used = False
         def cached_first_infer(observation):
             nonlocal initial_used
-            if not initial_used:
+            if not initial_used and first is not None:
                 initial_used = True
                 return first
             return infer(observation)
@@ -209,11 +199,17 @@ def execute_policy_prepare(args):
         elif worker is None:
             worker = MotionWorker(["pixi", "run", "-e", "ros2", "bash", "-lc", inner],
                                   cwd=ROS_PROJECT, protocol_fd=args.sharpa_backend == "sdk_direct")
+        initial_target = None
+        if home_arms is not None:
+            from .home_pose import home_target
+            initial_target = home_target(home_arms, initial["observation/state"])
         result = prepare_and_run_chunks(cached_first_infer,
             lambda completed: observation_after_completion(args, completed), worker, initial,
             num_chunks=args.num_chunks, speed_rad_s=args.prepare_speed_rad_s,
             execute_speed_scale=args.execute_speed_scale,
-            trace_writer=trace_writer)
+            trace_writer=trace_writer,
+            execute_steps=getattr(args, "execute_steps", 50),
+            initial_target=initial_target, home_metadata=home_metadata)
         if trace_writer is not None:
             result["execution_traces"] = trace_writer.paths
             result["run_report"] = str(trace_writer.run_path)
@@ -353,7 +349,7 @@ def main() -> None:
     modes.add_argument('--handoff-verify',action='store_true',help='Verify persistent acquisition IPC + policy without enabling motion')
     from .handoff import DEFAULT_SOCKET
     parser.add_argument('--handoff-socket',type=Path,default=DEFAULT_SOCKET)
-    parser.add_argument("--prepare-config", type=Path, help="Legacy litchibot only: configured 58D task pose; sdk_direct uses policy-first prepare")
+    parser.add_argument("--prepare-config", type=Path, help="Legacy litchibot only: configured 58D task pose")
     parser.add_argument("--prepare-policy-first", action="store_true",
                         help="Execute-only: slowly approach initial policy first target through existing guards, then re-infer")
     parser.add_argument("--prepare-speed-rad-s", type=float, default=0.03,
@@ -363,10 +359,20 @@ def main() -> None:
                         help="Sharpa time-stretch preset; independent of the checkpoint training method")
     speeds.add_argument("--execute-speed-scale", type=float,
                        help="Custom time scale in (0,1]; alternative to --speed; default is fast (1.0)")
+    parser.add_argument("--execute-steps", type=int,
+                        help="Execute first N of 50 predicted actions, then reobserve/reinfer (default 15)")
+    parser.add_argument("--initialization", choices=("home", "policy"), default="home",
+                        help="sdk_direct: fixed arm and hand Home, or legacy policy first target")
+    parser.add_argument("--home-poses", type=Path, default=Path(os.environ.get(
+        "SHARPA_HOME_POSES", str(Path(__file__).resolve().parents[2] / ".deployment/operator_poses.yaml"))))
+    parser.add_argument("--home-task", default="powder_weighing")
+    parser.add_argument("--hand-home", type=Path, default=Path(__file__).resolve().parents[2] / ".deployment/hand_home.json",
+                        help="Named 22D targets for both hands; required in fixed Home mode")
     parser.add_argument("--num-chunks", type=int, default=1,
-                        help="Number of full 50-frame chunks after prepare; 0 repeats until Ctrl-C")
+                        help="Number of replanning rounds after prepare; 0 repeats until Ctrl-C")
     parser.add_argument("--policy-url", default=config.POLICY_URL)
     parser.add_argument("--episode-parquet", type=Path)
+    parser.add_argument("--sample-frame", type=int, default=0, help="Offline episode row to read")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--ros-overlay", type=Path, help="ROS overlay containing teleop_interfaces for Pixi ROS Python")
     parser.add_argument("--enable-hardware", action="store_true")
@@ -375,6 +381,14 @@ def main() -> None:
     parser.add_argument("--execution-trace-dir", type=Path, default=config.EXECUTION_TRACE_DIR,
                         help="Directory for sdk_direct per-chunk JSON execution traces")
     args = parser.parse_args()
+    if args.prepare_policy_first and args.sharpa_backend == "sdk_direct":
+        args.initialization = "policy"
+    if args.execute_steps is None:
+        args.execute_steps = 15 if args.sharpa_backend == "sdk_direct" else 50
+    if not 1 <= args.execute_steps <= config.ACTION_HORIZON:
+        parser.error("--execute-steps must be in [1, 50]")
+    if args.sharpa_backend == "litchibot" and args.execute_steps != 50:
+        parser.error("legacy litchibot requires --execute-steps 50; prefix execution uses sdk_direct")
     from .profiles import resolve_speed
     profile = resolve_speed(args.speed, args.execute_speed_scale)
     args.speed = profile.name
@@ -384,6 +398,7 @@ def main() -> None:
             parser.error("Use --check or --mode, not both")
         args.mode = "check"
     if args.mode == "check":
+        from .policy_prepare import HOME_TOLERANCE_RAD
         if (args.enable_hardware or args.execute or args.preflight_only or args.prepare
                 or args.handoff_verify or args.episode_parquet):
             parser.error("check does not accept hardware, live modes or recorded inputs")
@@ -394,7 +409,12 @@ def main() -> None:
         print(json.dumps({"mode": "check", "hardware_output": False,
                           "speed": args.speed, "execute_speed_scale": args.execute_speed_scale,
                           "prepare_speed_rad_s": args.prepare_speed_rad_s,
+                          "home_tolerance_rad": HOME_TOLERANCE_RAD,
                           "num_chunks": args.num_chunks, "action_hz": config.ACTION_HZ,
+                          "execute_steps": args.execute_steps, "initialization": args.initialization,
+                          "home_poses": str(args.home_poses), "home_task": args.home_task,
+                          "hand_initialization": "fixed_named_hand_home",
+                          "hand_home": str(args.hand_home),
                           "action_shape": [config.ACTION_HORIZON, config.ACTION_DIM],
                           "checkpoint": str(config.CHECKPOINT), "policy_url": args.policy_url,
                           "sharpa_backend": args.sharpa_backend}, indent=2))
@@ -408,7 +428,7 @@ def main() -> None:
             parser.error("execute requires --enable-hardware and live ROS observations; recorded samples are forbidden")
         if args.sharpa_backend == "sdk_direct":
             if args.prepare_config is not None:
-                parser.error("sdk_direct uses policy-first prepare; --prepare-config belongs to the legacy backend")
+                parser.error("sdk_direct uses --initialization home/policy; --prepare-config belongs to the legacy backend")
             args.prepare_policy_first = True
         elif args.prepare_config is None and not args.prepare_policy_first:
             parser.error("legacy execute requires --prepare-config or --prepare-policy-first")
@@ -471,7 +491,7 @@ def main() -> None:
     if args.mode == "execute":
         preparation, observation = prepare_before_observation(args)
     else:
-        observation = load_sample(args.episode_parquet, args.prompt)
+        observation = load_sample(args.episode_parquet, args.prompt, args.sample_frame)
     metadata, actions, chunk = SharpaRuntime(args.policy_url).infer_chunk(observation)
     if args.mode == "execute" and not 0 <= time.monotonic_ns() - observation["_captured_monotonic_ns"] <= 200_000_000:
         raise RuntimeError("Observation expired during policy inference; no command will be published")

@@ -22,9 +22,9 @@ SDK_SLEW_LIMIT_RAD = 0.10
 WATCHDOG_TIMEOUT_S = 0.25
 
 
-def scaled_action_frames(actions: np.ndarray, speed_scale: float):
+def scaled_action_frames(actions: np.ndarray, speed_scale: float, *, execute_steps=50):
     """Time-stretch an absolute chunk while retaining 30 Hz output."""
-    chunk = as_finite_action_chunk(actions)
+    chunk = action_prefix(actions, execute_steps)
     if not np.isfinite(speed_scale) or not 0.0 < speed_scale <= 1.0:
         raise ValueError("execute speed scale must be finite and in (0, 1]")
     steps = max(1, int(math.ceil(1.0 / float(speed_scale))))
@@ -37,15 +37,21 @@ def scaled_action_frames(actions: np.ndarray, speed_scale: float):
         previous = target.copy()
 
 
-def chunk_command_frames(actions, start_state, *, speed_scale=1.0, approach_speed_rad_s=0.03):
-    """Join measured state to a new chunk, preserving every policy target.
+def action_prefix(actions, execute_steps):
+    if type(execute_steps) is not int or not 1 <= execute_steps <= 50:
+        raise ValueError("execute_steps must be an integer in [1, 50]")
+    return as_finite_action_chunk(actions)[:execute_steps]
+
+
+def chunk_command_frames(actions, start_state, *, speed_scale=1.0, approach_speed_rad_s=0.03, execute_steps=50):
+    """Join measured state to a new prediction, preserving every selected target.
 
     The bridge is joint-space interpolation, not another policy inference.
     Check slew on the emitted stream (including its first transition), rather
     than rejecting raw nodes that become executable through time stretching.
     Joint limits on the policy targets and start state are checked by ROS.
     """
-    chunk = as_finite_action_chunk(actions)
+    chunk = action_prefix(actions, execute_steps)
     start = np.asarray(start_state, dtype=np.float32)
     if start.shape != (58,) or not np.isfinite(start).all():
         raise ValueError("Chunk bridge requires finite measured 58D state")
@@ -55,7 +61,7 @@ def chunk_command_frames(actions, start_state, *, speed_scale=1.0, approach_spee
     distance = float(np.max(np.abs(delta)))
     bridge_steps = int(math.ceil(distance / (approach_speed_rad_s * DT_NS / 1e9)))
     bridge = [start + delta * (i / bridge_steps) for i in range(1, bridge_steps + 1)]
-    frames = np.asarray([*bridge, *scaled_action_frames(chunk, speed_scale)], dtype=np.float32)
+    frames = np.asarray([*bridge, *scaled_action_frames(actions, speed_scale, execute_steps=execute_steps)], dtype=np.float32)
     changes = np.diff(np.vstack([start, frames]), axis=0)
     for part in (LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE):
         if np.max(np.abs(changes[:, part])) >= SDK_SLEW_LIMIT_RAD:

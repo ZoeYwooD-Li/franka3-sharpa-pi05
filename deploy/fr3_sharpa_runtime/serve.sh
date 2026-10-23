@@ -2,4 +2,5 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-exec uv run python -m deploy.fr3_sharpa_runtime.serve "$@"
+source "$ROOT/deploy/fr3_sharpa_runtime/env.sh"
+sharpa_python -m deploy.fr3_sharpa_runtime.serve "$@"

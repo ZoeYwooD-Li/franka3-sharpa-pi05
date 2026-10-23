@@ -1,172 +1,147 @@
-# FR3 + Sharpa π0.5 runtime
+# FR3 + Sharpa 本机部署
 
-当前真机路径是 `sdk_direct`：
+当前模型：π0.5 全量微调、30 Hz、原生 58D、50 帧、全部为绝对关节目标，单位 rad。执行路径是 policy server → runtime → FR3 Safety Gateway / Sharpa SDK direct。LoRA/full 参数差异由模型加载层处理，速度档位共用同一个执行器。
 
-```text
-OpenPI π0.5 policy server
-        ↓
-fr3_sharpa_runtime
-        ↓
-FR3 Safety Gateway + SharpaSdkDirectExecutor
-        ↓
-litchi_hardware.SharpaSdkHand
-        ↓
-Sharpa Wave SDK
-```
+## 本机配置
 
-当前部署为 **π0.5 全量微调、30 Hz、原生 58D、50 帧、绝对关节目标**。
-
-默认读取用户提供的权重：
-
-```text
-/media/user/8C0F29AFFD6CD874/sharpa_tomato_ckpt_4000
-└── assets/tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz/norm_stats.json
-```
-
-`model_loader.py` 构建专用推理配置：`gemma_2b` + `gemma_300m`，不含 LoRA 和 delta 动作转换。该配置名 `pi05_fr3_sharpa_ab4_normal_rgb_fullft_absolute_30hz_deploy` 是本机推理适配标识，不冒充权重的原始训练配置名。checkpoint 51 项参数叶无 LoRA；必须使用配套的 58D state/actions 统计。原始训练 manifest 不在权重目录内。
-
-当前模型为原生 58D，不采用其他平台的 64→54 维映射。Sharpa 始终输出 `[左臂7, 左手22, 右臂7, 右手22]`，不补零、不重复加当前状态。实时输入已经是 canonical 58D，不能再套原始转换器的 116D 重排。
-
-参考训练工程 `/home/user/tomato-openpi` 的 fullft recipe 和 multimodal adapter：原始 state116 按 `[0:7,28:50,14:21,72:94]` 取实测位置；原始 action58 按 `[0:7,14:36,7:14,36:58]` 重排到 canonical 58D，然后做 absolute 归一化。训练和实时相机约定为头部 `cam0`、左腕 `cam2`、右腕 `cam1`。默认 prompt 取该训练工程的番茄任务示例，可通过执行端 `--prompt` 指定实际训练文本。
-
-用户提供的 normal/speedup Markdown 最终规则保留 Sharpa state116/action58；normal 保留原轨迹，speedup 经时间重采样，但两者均为 30 Hz。本权重资产标识为 normal。数据处理记录不能证明该 checkpoint 的具体训练抽样比例；本机 tomato-openpi 的 baseline 仍指向旧 1016_2 批次，不能把旧 A/B/C LoRA 权重比例套到本次模型。
-
-不搬动权重即可运行。若复制到本机 SSD，在两个终端设置同一权重目录；统计默认从该 checkpoint/assets 自动选择：
+在仓库根目录运行。首次使用可通过已有 OpenPI Python 环境生成本机配置：
 
 ```bash
-export SHARPA_CHECKPOINT=/复制后的/sharpa_tomato_ckpt_4000
-# 仅当统计不在 checkpoint/assets 或有多份时指定对应文件：
-export SHARPA_NORM_STATS=/配套的/norm_stats.json
+/home/descfly/LTT/franka3-sharpa-pi05/.venv/bin/python \
+  deploy/fr3_sharpa_runtime/setup_local.py
 ```
 
-检查和 GPU 假观测验证均不连接机器人：
+默认绑定：
+
+| 项目 | 本机路径 |
+| --- | --- |
+| 权重 | `/home/descfly/桌面/sharpa_tomato_ckpt_4000` |
+| 硬件仓库 | `/home/descfly/ZH/gello_upper_body_teleop` |
+| Python | 相邻 `franka3-sharpa-pi05/.venv/bin/python` |
+| ROS 消息 | 当前仓库 `.deployment/sharpa_ros_messages/install` |
+| 执行日志 | 当前用户 `~/.local/state/fr3_sharpa_runtime/execution_traces` |
+
+换机器时用 `setup_local.py --checkpoint ... --gello ... --python ...` 显式设置。生成的 `.deployment/local.env` 只保存本机路径，已被 Git 忽略；启动脚本自动读取，调用者显式设置的环境变量优先。统计文件默认从所选 checkpoint/assets 中唯一的 norm_stats.json 读取；只有确有必要时才设置 `SHARPA_NORM_STATS`，更换 checkpoint 时同时检查该变量。
+
+配置过程不安装、升级或同步共享 Python 环境。`serve.sh` 和 `runtime.sh` 均使用已选解释器，并将当前仓库代码置于 PYTHONPATH 首位，避免导入相邻项目的代码。
+
+`setup_local.py` 还会从硬件仓库现有的 `config/modes/teleop_control.yaml` 生成独立的 `.deployment/teleop_openpi.yaml`：只增加 `openpi` 允许来源，保留原有来源、限位、速度、超时及接触检查设置。Compose 将此文件只读挂载给网关，不修改硬件仓库文件。SDK direct 在连接灵巧手前检查网关及其 `allowed_sources`，来源未获准时终止。
+
+## 固定 Home 与每轮执行步数
+
+固定 Home 到位容差为 **0.015 rad**（全部 58 个关节），仍要求相邻反馈变化不超过 0.005 rad 并连续稳定 0.5 秒。反馈新鲜度、原生限位和速度检查继续生效。
+
+sdk_direct 默认 `--initialization home --home-task powder_weighing --execute-steps 15`。
+先把双臂移动到用户指定 poses.yaml 的 `tasks.powder_weighing.home`，双手读取 `.deployment/hand_home.json` 的固定关节目标；Home 到位并稳定后才采集新观测进行任务推理。双臂 Home 使用原文件完整精度，不使用截图里的四舍五入值。
+
+手部 Home 已于 2026-10-23 14:23（北京时间）采集：左手 22 个实测关节角作为左手固定 Home；右手按同名关节使用相同的 rad 数值，不做符号翻转。`--hand-home` 默认指向 `.deployment/hand_home.json`，与双臂共用一次 58D prepare、到位和稳定检查。每次启动读取这份固定配置，不重新将当时的位置当作 Home；Ctrl-C 不自动回位，下次启动再执行完整 Home。该手部配置独立于双臂快照，同步 poses.yaml 不会覆盖它。文件缺失或关节名称/单位错误时，固定 Home 启动失败，不回退为保持实测姿态。
+
+源文件 `/home/descfly/franka_teleop_data/operator_gui/poses.yaml` 是 root 专属读权限，部署读取 `.deployment/operator_poses.yaml` 快照。初次配置或 GUI 更新 Home 后运行以下命令同步；`--via-docker` 只用无网络、只读挂载读取原文件，不启动设备，也不修改权限：
 
 ```bash
-./serve.sh --check-only
-./serve.sh --smoke-only --report /home/user/sharpa-pi05/.deployment/sharpa_full_4000_smoke.json
+source deploy/fr3_sharpa_runtime/env.sh
+"$SHARPA_PYTHON" -m deploy.fr3_sharpa_runtime.home_pose --via-docker
 ```
 
-2026-10-23 已完成该权重真实 GPU 加载和假观测推理，输出有限 `(50,58)`；这不代表现场轨迹可执行或任务成功。正常服务会先预热，再向客户端报告 full/absolute/30Hz 身份。
+快照配套 source.json 记录原始路径和 SHA256，初始化日志包含该来源信息。不同位置可通过 `--home-poses` 和 `--home-task` 指定。显式 `--initialization policy` 才使用原来的模型首帧 prepare。
 
-旧 `litchibot` guarded runtime、permit、handoff 和 acquisition 代码保留为 legacy fallback，当前 sdk_direct 执行不调用它们。
+每次模型仍预测完整 50×58；执行端只执行索引 0–14，然后丢弃剩余 35 帧、重新观测和推理。模型 horizon 不变。可用 `--execute-steps 1..50` 修改；`--execute-steps 50` 才执行全部预测。日志保留完整预测及计划/实际执行步数，末帧误差对照最后实际执行的动作。
 
-模型层与执行层分开：LoRA/full 的参数结构差异由模型层处理，不需要两套机器人执行程序。当前已验证的加载配置仍是这份全量权重；执行端不再把训练方式当作运动准入条件。详见 [部署结构与速度方案](ARCHITECTURE.md)。
+`--num-chunks` 是重新推理/执行的轮数，不是每轮动作数：默认 1；任意正整数执行对应轮数；0 持续执行，没有 chunk1/chunk2 上限。循环中任一观测、推理或执行失败会停止，不会强行继续。
 
-## 文件职责
-
-| 文件/组 | 作用 |
-|---|---|
-| `run.py`, `runtime.py`, `config.py` | CLI、policy 请求和运行入口 |
-| `model_loader.py` | 全量 58D absolute 模型配置及 checkpoint 契约 |
-| `protocol.py`, `action_adapter.py`, `records.py` | 58D action 协议和 adapter |
-| `ros_observation.py`, `observation_worker.py`, `feedback.py` | 实时 ROS observation / feedback |
-| `policy_prepare.py`, `profiles.py` | prepare、chunk 调度与 slow/medium/fast 速度预设 |
-| `sdk_direct.py`, `sdk_direct_motion_ros.py` | 当前 Sharpa SDK direct 后端 |
-| `execution_trace.py` | sdk_direct 每个 chunk 的复盘记录 |
-| `ros_transport.py`, `motion_worker.py` | ROS Safety Gateway 边界和 worker IPC |
-| `guarded_motion_ros.py`, `handoff.py`, `transport_service.py` | legacy guarded / handoff 回退路径 |
-| `compose.hardware.yaml` | 当前 Docker 依赖服务配置 |
-| `hardware_stack.py` | 旧 guarded/permit 启动器，仅用于 legacy 路径 |
-| `serve.py`, `serve.sh` | π0.5 policy server |
-| `runtime.sh` | 当前推荐执行入口 |
-| `tests/` | 单元和协议测试 |
-
-## 测试
+## 不连接设备的验证
 
 ```bash
-cd /home/user/sharpa-pi05
-git status --short
-git branch --show-current
-PYTHONPATH=. uv run pytest -q deploy/fr3_sharpa_runtime/tests
+bash deploy/fr3_sharpa_runtime/hardware.sh check
+bash deploy/fr3_sharpa_runtime/serve.sh --check-only
+bash deploy/fr3_sharpa_runtime/runtime.sh --check --speed slow
+bash deploy/fr3_sharpa_runtime/build_messages.sh
+bash deploy/fr3_sharpa_runtime/serve.sh --smoke-only \
+  --report .deployment/local_model_smoke.json
 ```
 
-## 一次性启动 ROS 依赖
+`hardware.sh check` 只解析 Compose；`build_messages.sh` 只编译消息并验证 Python 导入；smoke 使用黑色 RGB 和零状态验证模型计算链路。这些检查不建立设备连接，不代表实时观测、轨迹可执行或任务成功。模型服务正常启动时先预热，再向客户端发送 checkpoint/统计指纹、相机和动作协议。
+
+## 实时观测时间对齐
+
+参考录制入口的就绪检查，持久观测 worker 首次启动要求三路相机连续稳定 3 秒（cam0 至少 18 Hz，cam1/cam2 至少 25 Hz，源时间戳递增，源/接收间隔不超过 150 ms）。首次快照最多等待 15 秒，成功后恢复每次 5 秒。
+
+各路最新消息时间跨度超过 100 ms 时，从有界短时缓存中按共同源时间选择真实历史消息：以最慢一路最新源时间为基准，其余话题取不晚于该时间的最近样本。没有匹配样本时继续等待，不复制、插值或改写时间戳。选帧时原来的 200 ms 源时间/接收时间新鲜度和 100 ms 跨模态跨度限制保持不变；任一最新流过期或未来时间戳仍拒绝。
+
+时间对齐会使用稍早的关节和腕部图像，不能消除头部相机自身的传输延迟。每轮动作后的观测仍要求所有被选消息来自执行结束之后。执行 trace 的 `_alignment` 记录选帧模式、各路年龄和源时间跨度；此缓存仅用于模型观测，执行器实时反馈检查不变。
+
+## 真实数据离线验证
+
+`--episode-parquet` 支持两类输入：已排好顺序的 58D 状态及内嵌图像，或者 LeRobot v2.1 的具名状态及外部 MP4。对服务器原始 state116，根据 meta/info.json 名称提取位置并重排到 `[左臂7, 左手22, 右臂7, 右手22]`；不会截取前 58 维。相机为 cam0 头部、cam2 左腕、cam1 右腕，解码后为 RGB；检查数据及视频为 30 Hz、帧时间戳一致。缺少具名元数据的 116D 输入直接拒绝。
+
+先在终端 1 启动 `serve.sh`，再在终端 2 运行：
 
 ```bash
-cd /home/user/gello_upper_body_teleop
-docker compose \
-  --profile openpi-hardware \
-  --project-directory docker \
-  --env-file docker/.env \
-  -f docker/compose.yaml \
-  -f docker/compose.openpi.yaml \
-  -f /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime/compose.hardware.yaml \
-  up -d franka-control teleop-control openpi-cameras
+bash deploy/fr3_sharpa_runtime/runtime.sh \
+  --episode-parquet /home/descfly/company-remote-2/real/harvest-tomato/data/data-lerobot/sharpa/A/121_430_data_lerobot/data/chunk-000/episode_000000.parquet \
+  --sample-frame 100
 ```
 
-## 两终端真机部署
+默认是 dry-run：只请求推理和报告，不启动 SDK、不发布运动命令。默认 prompt 与当前服务器 A/B 数据的 tasks.jsonl 一致，其他任务请用 `--prompt` 指定。实时 ROS 输入本来就是 canonical 58D，不重复套用原始数据重排。
 
-### Terminal 1：policy server
+## 现场运行
+
+以下命令会启动现场硬件依赖或发送运动指令，应在完成现场观测、设备身份和环境检查后使用。本轮本机配置验证没有执行这些命令。
+
+启动依赖：
 
 ```bash
-cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
-./serve.sh
+bash deploy/fr3_sharpa_runtime/hardware.sh up
 ```
 
-### Terminal 2：prepare + 完整 chunk 循环
+此入口仅启动 `franka-control`、采用独立 OpenPI 网关配置的 `teleop-control` 和只运行三路相机的 `openpi-cameras`；无需另一个 `compose.openpi.yaml`，不启动 bag recorder 或旧 sharpa_driver。会复用既有 Compose 项目中的同名服务；已有遥操任务运行时应先结束该任务。不要同时启动旧 sharpa_driver 和 sdk_direct，两者不能共同拥有灵巧手设备。
+
+终端 1：
 
 ```bash
-cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
-./runtime.sh \
-  --execute \
-  --enable-hardware \
-  --prepare-speed-rad-s 0.03 \
-  --speed slow \
-  --num-chunks 0
+bash deploy/fr3_sharpa_runtime/serve.sh
 ```
 
-执行入口默认选择 `sdk_direct`，并自动执行 policy-first prepare，无需 permit、handoff 或旧 supervised 配置。`--execute --enable-hardware` 明确选择真机运行。
-
-执行链路：当前实测状态和三路图像 → 首次推理只取首帧作 prepare 目标 → 低速到位并稳定 → 重新采集 → 重新推理 → 从实测姿态低速衔接新首帧 → 完整执行 50×58 chunk → 重新采集 → 下一轮推理与执行。
-
-- `--speed slow/medium/fast`：选择 0.1/0.5/1.0 的时间倍率，使用同一执行器；不与 `--execute-speed-scale` 混用。三档均为串行 30 Hz 下发，不代表已实现 RTG/Ruckig。
-- `--num-chunks 0`：持续运行到 Ctrl-C；`--num-chunks 2` 重现两段试验；任意正整数指定段数。没有自动识别任务完成的逻辑。
-- `--prepare-speed-rad-s 0.03`：初始 prepare 和每段首帧衔接的关节速度。
-- `--execute-speed-scale 0.1`：相邻 policy target 间分为 10 步，设备仍按 30 Hz 下发。50 帧主体为 491 个下发点，约 16.37 秒，另外加上首帧衔接和推理/观测时间。非整数倒数的倍率向更慢一侧取整。默认 `1.0` 保留模型原速。
-
-初始姿态可以与 prepare 目标不同；prepare 是关节空间直线插值，没有环境碰撞规划，不代表任意物理姿态都能无碰撞到达。prepare 目标仍来自模型首帧，不是固定 Home。
-
-当前位置和所有预测点仍检查关节限位。SDK 跳变量检查施加在实际插值后的下发帧上，不再用原始模型节点误拒绝慢放轨迹。30 Hz 调度使用绝对时钟，避免每次 SDK 调用耗时叠加；反馈、SDK watchdog 和 FR3 网关继续工作。
-
-消息类型构建放在项目 `.deployment/sharpa_ros_messages/install`，不再依赖重启会丢失的 `/tmp`。`runtime.sh` 首次发现缺失时自动调用仅编译消息类型的 `build_messages.sh`；也可以通过 `SHARPA_ROS_MESSAGES_OVERLAY` 指定已有构建。
-
-不要同时启动旧 `sharpa_driver` 和 `sdk_direct`；两者不能共同拥有 Sharpa 设备。
-
-## execution trace
-
-sdk_direct 每个 chunk 默认保存到：
-
-```text
-/home/user/.local/state/fr3_sharpa_runtime/execution_traces/
-```
-
-也可以指定：
+终端 2，首次只执行一段：
 
 ```bash
---execution-trace-dir /home/user/sharpa_execution_traces
+bash deploy/fr3_sharpa_runtime/runtime.sh \
+  --execute --enable-hardware --speed slow --execute-steps 15 --num-chunks 1
 ```
 
-查看：
+流程：读取固定双臂 Home、双手使用固定 Home → 低速到位并稳定 → 采集三路 RGB 和状态并推理 50 帧 → 从实测姿态衔接首帧 → 执行前 15 帧 → 新观测、新推理并重复。prepare 默认 0.03 rad/s，采用关节空间直线插值，没有环境碰撞规划。
+
+| 档位 | 时间倍率 | 15 帧主体下发点 | 30 Hz 主体时长 |
+| --- | ---: | ---: | ---: |
+| slow | 0.1 | 141 | 约 4.70 秒 |
+| medium | 0.5 | 29 | 约 0.97 秒 |
+| fast | 1.0 | 15 | 约 0.50 秒 |
+
+时长不含 prepare、首帧衔接、观测和推理。未指定速度时默认 1.0；`--speed` 不能与 `--execute-speed-scale` 混用。`--num-chunks 0` 表示持续运行到 Ctrl-C，没有任务完成识别。当前是串行推理/执行，尚未实现 RTG、Ruckig 或跨段非零速度拼接，详见 [架构说明](ARCHITECTURE.md)。
+
+执行终端退出时（包括 Ctrl-C、SIGTERM、正常完成指定轮数或运行失败），`runtime.sh` 的会话管理器先结束 runtime/SDK 子进程，再清理该次执行启动前记录的部署容器。它会停止并删除 OpenPI 的 `openpi-cameras` 与使用 `/etc/openpi/teleop_control.yaml` 的 `teleop-control`；释放网关后停止对应的机械臂控制容器。删除网关容器可避免后续遥操误用它残留的 OpenPI 配置，遥操启动器会重新按自身配置创建网关。
+
+清理按不可变容器 ID、Compose 配置来源和网关挂载路径核对，不按服务名强制关闭后来重建的容器；检测到遥操已经接管时跳过对应控制器。不执行整个项目的 `down`，也不停止其他遥操服务。模型服务是独立终端，需要另行 Ctrl-C 结束。`--check`、帮助、离线 dry-run 不触发硬件清理。
+
+如果只启动了硬件、尚未运行执行端，或强制终止导致自动清理未完成，可显式重试：
 
 ```bash
-ls -lt /home/user/.local/state/fr3_sharpa_runtime/execution_traces
-jq '.status, .action_shape, .chunk_duration_s, .end_to_end_duration_s' \
-  /home/user/.local/state/fr3_sharpa_runtime/execution_traces/*-chunk*.json
+bash deploy/fr3_sharpa_runtime/hardware.sh stop
 ```
 
-每轮保存 `*-chunkNNN.json`，包括原始动作、适配结果、执行前后观测、首帧衔接帧数和末帧跟踪误差；`COMPLETE` 表示指令下发完成，不代表番茄任务成功或所有关节精确到位。
+`stop` 使用同样的归属检查，清除匹配的 OpenPI 网关和相机容器；没有遗留部署容器时可重复运行。SIGKILL、断电或 Docker 不可用时不能保证自动清理成功；清理失败会明确报告错误，恢复 Docker 后可重试此命令。
 
-整次运行另存 `*-events.jsonl` 和 `*-run.json`。prepare、观测、推理、执行的失败阶段与错误原因会保存；执行前已写入的 chunk 不再永久停留在 `IN_FLIGHT`。Ctrl-C 记为 `INTERRUPTED`。执行已完成而后续相机失败时，chunk 保留 `COMPLETE` 并记录观测失败，运行报告为 `FAILED`。
+## 日志与验收边界
 
-## 停止
+每轮执行保存 chunk JSON、整次 events.jsonl 和 run.json。`COMPLETE` 表示指令下发完成，不代表全部关节精确到位或番茄任务成功。prepare、观测、推理、执行失败与中断会记录对应阶段。
 
-先停止 Terminal 2，再停止 Terminal 1，均使用 `Ctrl-C`。需要停止 Docker 依赖时：
+checkpoint 原始服务器训练 manifest 未随权重提供。当前加载设置是与该权重结构匹配的推理配置，并非恢复出的训练实验配置；仍需核对实际数据清单、训练时相机和动作语义。GPU smoke 和真实样本 dry-run不替代现场相机、左右设备身份及轨迹检查。
+
+单元测试：
 
 ```bash
-cd /home/user/gello_upper_body_teleop
-docker compose --project-directory docker --env-file docker/.env \
-  -f docker/compose.yaml -f docker/compose.openpi.yaml \
-  -f /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime/compose.hardware.yaml down
+source deploy/fr3_sharpa_runtime/env.sh
+"$SHARPA_PYTHON" -m pytest -q deploy/fr3_sharpa_runtime/tests
 ```
 
-旧路径说明见 [LEGACY.md](LEGACY.md)。
+旧 guarded 路径说明见 [LEGACY.md](LEGACY.md)。历史 `--preflight-only` 仍检查 guarded driver，不能用它代替 sdk_direct 的现场验收。

@@ -24,8 +24,8 @@ from .feedback import ROSFeedbackProvider
 from .policy_prepare import SlowApproach, target_chunk
 from .protocol import (DT_NS, LEFT_SHARPA_SLICE, RIGHT_SHARPA_SLICE,
                        as_finite_action_chunk)
-from .ros_transport import construct_messages, validate_action_ranges, validate_gateway_graph
-from .sdk_direct import SharpaSdkDirectExecutor, chunk_command_frames, play_command_frames
+from .ros_transport import construct_messages, validate_action_ranges, validate_gateway_admission
+from .sdk_direct import SharpaSdkDirectExecutor, action_prefix, chunk_command_frames, play_command_frames
 
 
 def main() -> None:
@@ -77,7 +77,7 @@ def main() -> None:
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and "teleop_safety_gateway" not in node.get_node_names():
             rclpy.spin_once(node, timeout_sec=0.05)
-        validate_gateway_graph(node)
+        validate_gateway_admission(node)
         existing = {
             topic: node.get_publishers_info_by_topic(topic)
             for topic in ("/sharpa/left/joint_states", "/sharpa/right/joint_states")
@@ -156,7 +156,7 @@ def main() -> None:
                                         # Keep prepare completion strictly inside
                                         # the execute FR3 first-target gate
                                         # (0.05 rad) without changing that gate.
-                                        tolerance_rad=0.049)
+                                        tolerance_rad=float(request.get("tolerance_rad", 0.049)))
                 next_tick = time.monotonic_ns()
                 settled = False
                 last_error = None
@@ -182,7 +182,11 @@ def main() -> None:
                                   "frames": sequence}), file=protocol, flush=True)
             elif operation == "chunk":
                 actions = as_finite_action_chunk(np.asarray(request["actions"], dtype=np.float32))
-                validate_action_ranges(actions, check_slew=False)
+                execute_steps = request.get("execute_steps", 50)
+                selected = action_prefix(actions, execute_steps)
+                validation_actions = actions.copy()
+                validation_actions[execute_steps:] = selected[-1]
+                validate_action_ranges(validation_actions, check_slew=False)
                 speed_scale = float(request.get("execute_speed_scale", args.execute_speed_scale))
                 if not np.isfinite(speed_scale) or not 0.0 < speed_scale <= 1.0:
                     raise ValueError("execute_speed_scale must be finite and in (0, 1]")
@@ -190,6 +194,7 @@ def main() -> None:
                 validate_action_ranges(target_chunk(current.state), check_slew=False)
                 frames, bridge_frames = chunk_command_frames(
                     actions, current.state, speed_scale=speed_scale,
+                    execute_steps=execute_steps,
                     approach_speed_rad_s=float(request.get("approach_speed_rad_s", args.speed_rad_s)))
                 # A policy inference/observation boundary may exceed the
                 # hand driver's 0.25 s continuous-stream watchdog.  This is
@@ -203,12 +208,14 @@ def main() -> None:
                 play_command_frames(frames, send_chunk_frame, fresh_feedback)
                 end_feedback = fresh_feedback()
                 error_by_group = {
-                    name: float(np.max(np.abs(end_feedback.state[part] - actions[-1, part])))
+                    name: float(np.max(np.abs(end_feedback.state[part] - selected[-1, part])))
                     for name, part in (("left_arm", slice(0, 7)), ("left_hand", LEFT_SHARPA_SLICE),
                                        ("right_arm", slice(29, 36)), ("right_hand", RIGHT_SHARPA_SLICE))
                 }
                 print(json.dumps({"status": "PASS", "operation": "chunk", "published": True,
-                                  "frames": len(frames), "policy_frames": len(actions),
+                                  "frames": len(frames), "policy_frames": execute_steps,
+                                  "predicted_policy_frames": len(actions), "execute_steps": execute_steps,
+                                  "executed_action_indices": [0, execute_steps - 1],
                                   "bridge_frames": bridge_frames,
                                   "completion": "commands_sent", "end_error_rad": error_by_group,
                                   "execute_speed_scale": speed_scale,

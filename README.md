@@ -8,44 +8,45 @@
 | --- | --- |
 | 模型 | `gemma_2b` + `gemma_300m`，无 LoRA |
 | 输入 | 三路 RGB、58 维实测关节位置、英文任务文本 |
-| 输出 | 每次 50 帧 × 58 维，单位 rad，绝对关节位置 |
+| 输出 | 每次预测 50 帧 × 58 维，默认执行前 15 帧后重新观测推理 |
+| 初始姿态 | poses.yaml 的 powder_weighing 双臂 Home，双手采用由左手实测角映射的固定 Home |
 | 关节顺序 | 左臂 7、左手 22、右臂 7、右手 22 |
 | 相机 | 头部 cam0、左腕 cam2、右腕 cam1 |
 | 模型动作与设备下发 | 30 Hz，名义间隔约 33.33 ms |
 | 执行后端 | `sdk_direct`：FR3 Safety Gateway + Sharpa Wave SDK |
 
-默认权重位于外置盘，代码仓库不包含权重：
+本机配置绑定以下权重，代码仓库不包含权重：
 
 ```text
-/media/user/8C0F29AFFD6CD874/sharpa_tomato_ckpt_4000
+/home/descfly/桌面/sharpa_tomato_ckpt_4000
 ```
 
 归一化统计自动读取该 checkpoint 的 `assets/tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz/norm_stats.json`。更换路径时，在两个终端设置相同的 `SHARPA_CHECKPOINT`；不要替换为其他实验的统计。
 
 ## 两个终端启动
 
-先按 [runtime 部署说明](deploy/fr3_sharpa_runtime/README.md)启动 ROS、相机和机械臂依赖，准备 Pixi/SDK 环境。
+先按 [runtime 部署说明](deploy/fr3_sharpa_runtime/README.md)生成 `.deployment/local.env`，运行离线检查，再在现场启动 ROS、相机和机械臂依赖。首次真机测试只执行一个 chunk。
 
 终端一，加载权重、预热并启动推理服务：
 
 ```bash
-cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test/deploy/fr3_sharpa_runtime
 ./serve.sh
 ```
 
 终端二，下列命令连接设备并驱动机器人：
 
 ```bash
-cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test/deploy/fr3_sharpa_runtime
 ./runtime.sh --execute --enable-hardware \
   --prepare-speed-rad-s 0.03 \
   --speed slow \
-  --num-chunks 0
+  --execute-steps 15 --num-chunks 1
 ```
 
-执行流程：当前观测 → 推理首帧作为 prepare 目标 → 低速到位并稳定 → 重新观测、重新推理 → 衔接并执行完整 chunk → 下一轮。
+执行流程：到配置的双臂 Home、双手到固定 Home → 到位并稳定 → 新观测、预测 50 帧 → 衔接并执行前 15 帧 → 新观测和新推理，进入下一轮。Home 源文件及快照同步方式见 runtime 说明。
 
-`--num-chunks 0` 持续运行到 Ctrl-C；正整数指定段数。`--execute-speed-scale 0.1` 将每对模型动作点分为 10 步并保持 30 Hz 下发，50 帧主体约 16.37 秒，另加 prepare、首帧衔接、观测及推理时间。没有自动判定番茄任务完成的逻辑。prepare 为关节空间插值，不包含环境碰撞规划。
+`--num-chunks 0` 持续运行到 Ctrl-C；任意正整数指定轮数，没有 chunk1/chunk2 上限。`--execute-steps 15` 控制每轮实际执行的动作数，模型始终预测 50 帧。`--execute-speed-scale 0.1` 将每对模型动作点分为 10 步并保持 30 Hz 下发，15 帧主体约 4.70 秒，另加 prepare、首帧衔接、观测及推理时间。没有自动判定番茄任务完成的逻辑。prepare 为关节空间插值，不包含环境碰撞规划。
 
 速度可选 `--speed slow`（0.1）、`medium`（0.5）、`fast`（1.0），共用同一执行器。参数含义及当前功能边界见 [部署结构](deploy/fr3_sharpa_runtime/ARCHITECTURE.md)。模型层负责训练方式和参数结构，执行层只使用统一动作契约。
 
@@ -54,8 +55,10 @@ cd /home/user/sharpa-pi05/deploy/fr3_sharpa_runtime
 以下检查不连接机器人：
 
 ```bash
-cd /home/user/sharpa-pi05
-JAX_PLATFORMS=cpu .venv/bin/python -m pytest deploy/fr3_sharpa_runtime/tests -q
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test
+source deploy/fr3_sharpa_runtime/env.sh
+"$SHARPA_PYTHON" -m pytest deploy/fr3_sharpa_runtime/tests -q
+bash deploy/fr3_sharpa_runtime/hardware.sh check
 bash deploy/fr3_sharpa_runtime/serve.sh --check-only
 bash deploy/fr3_sharpa_runtime/serve.sh --smoke-only
 ```
@@ -78,6 +81,6 @@ bash deploy/fr3_sharpa_runtime/serve.sh --smoke-only
 | `packages/openpi-client/` | WebSocket 客户端 |
 | `docs/` | 通用 OpenPI 参考资料与文档索引 |
 
-当前全量模型的训练配方参考独立工程 `/home/user/tomato-openpi`。本仓库历史 Sharpa LoRA 配置不用于加载当前全量权重。旧平台部署和实验代码已从当前分支移除，可通过 Git 历史查阅。
+当前全量模型的训练配方参考独立工程 `/home/descfly/LTT/tomato-openpi`。本仓库历史 Sharpa LoRA 配置不用于加载当前全量权重。旧平台部署和实验代码已从当前分支移除，可通过 Git 历史查阅。
 
 权重、训练数据、运行日志和本机构建产物不提交 Git。许可证见 [LICENSE](LICENSE) 和 [LICENSE_GEMMA.txt](LICENSE_GEMMA.txt)。

@@ -6,6 +6,7 @@ import base64
 import json
 import sys
 import time
+from collections import deque
 
 import numpy as np
 
@@ -22,6 +23,46 @@ TOPICS = {
 }
 MAX_AGE_NS = 200_000_000
 MAX_SPREAD_NS = 100_000_000
+
+
+def timing_issues(entries, now_ros, now_mono):
+    issues = []
+    stamps = []
+    for key, (message, received) in entries.items():
+        stamp = stamp_ns(message)
+        if not 0 <= now_mono - received <= MAX_AGE_NS:
+            issues.append(f"Stale received observation: {key}")
+        if stamp <= 0 or not 0 <= now_ros - stamp <= MAX_AGE_NS:
+            issues.append(f"Stale/future ROS timestamp: {key} (age={(now_ros-stamp)/1e6:.3f} ms)")
+        stamps.append(stamp)
+    if stamps and max(stamps) - min(stamps) > MAX_SPREAD_NS:
+        issues.append(f"Multimodal observation timestamps are not synchronized "
+                      f"(span={(max(stamps)-min(stamps))/1e6:.3f} ms, limit={MAX_SPREAD_NS/1e6:.3f} ms)")
+    return issues
+
+
+def select_aligned_observation(latest, histories, *, now_ros, now_mono):
+    """Select original samples at/before a common source time; never retimestamp."""
+    issues = timing_issues(latest, now_ros, now_mono)
+    if not issues:
+        return dict(latest), "latest"
+    # A buffer cannot cure stale/future streams. Wait for genuine fresh updates.
+    if any(not issue.startswith("Multimodal") for issue in issues):
+        raise ValueError("; ".join(issues))
+    anchor = min(stamp_ns(message) for message, _ in latest.values())
+    selected = {}
+    for key in latest:
+        candidates = [entry for entry in histories[key]
+                      if 0 < stamp_ns(entry[0]) <= anchor
+                      and 0 <= now_ros - stamp_ns(entry[0]) <= MAX_AGE_NS
+                      and 0 <= now_mono - entry[1] <= MAX_AGE_NS]
+        if not candidates:
+            raise ValueError("; ".join(issues) + f"; Waiting for time-aligned history: {key}")
+        selected[key] = max(candidates, key=lambda entry: stamp_ns(entry[0]))
+    issues = timing_issues(selected, now_ros, now_mono)
+    if issues:
+        raise ValueError("; ".join(issues))
+    return selected, "source_time_buffer"
 
 
 def ordered_state(message, side: str, hand: bool) -> list[float]:
@@ -77,7 +118,7 @@ def stamp_ns(message) -> int:
 
 class ObservationProvider:
     """One ROS context/node and subscriptions for the runtime lifetime."""
-    def __init__(self):
+    def __init__(self, *, startup_stable_s=0.0):
         import rclpy
         from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                                ReliabilityPolicy, qos_profile_sensor_data)
@@ -86,6 +127,10 @@ class ObservationProvider:
         rclpy.init()
         self.node = rclpy.create_node("fr3_sharpa_observation")
         self.latest = {}
+        self.histories = {key: deque(maxlen=16 if key.startswith("cam") else 256) for key in TOPICS}
+        self.camera_windows = {}
+        self.startup_stable_s = startup_stable_s
+        self.startup_ready = startup_stable_s == 0
         self.subscriptions = []
         self.closed = False
         camera_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=5,
@@ -95,11 +140,44 @@ class ObservationProvider:
             for key, topic in TOPICS.items():
                 self.subscriptions.append(self.node.create_subscription(
                     Image if key.startswith("cam") else JointState, topic,
-                    lambda message, selected=key: self.latest.__setitem__(selected, (message, time.monotonic_ns())),
+                    lambda message, selected=key: self.remember(selected, message),
                     camera_qos if key.startswith("cam") else qos_profile_sensor_data))
         except BaseException:
             self.close()
             raise
+
+    def remember(self, key, message):
+        now = time.monotonic_ns()
+        entry = (message, now)
+        self.latest[key] = entry
+        history = self.histories[key]
+        history.append(entry)
+        while history and now - history[0][1] > MAX_AGE_NS:
+            history.popleft()
+        if key.startswith("cam"):
+            stamp = stamp_ns(message)
+            window = self.camera_windows.get(key)
+            # Match recording readiness: fresh advancing frames, <=150 ms gaps.
+            if (window is None or stamp <= window[3] or stamp - window[3] > 150_000_000
+                    or now - window[2] > 150_000_000):
+                self.camera_windows[key] = (now, stamp, now, stamp, 1)
+            else:
+                self.camera_windows[key] = (window[0], window[1], now, stamp, window[4] + 1)
+
+    def cameras_ready(self, now):
+        if self.startup_ready:
+            return True
+        for key, minimum_hz in (("cam0", 18), ("cam1", 25), ("cam2", 25)):
+            if key not in self.camera_windows:
+                return False
+            first, first_stamp, last, last_stamp, count = self.camera_windows[key]
+            if (last - first < self.startup_stable_s * 1e9 or now - last > 150_000_000
+                    or last_stamp <= first_stamp):
+                return False
+            if min((count-1)*1e9/(last-first), (count-1)*1e9/(last_stamp-first_stamp)) < minimum_hz:
+                return False
+        self.startup_ready = True
+        return True
 
     def close(self):
         if not self.closed:
@@ -123,34 +201,33 @@ class ObservationProvider:
             # No timestamps or frames are synthesized, shifted or duplicated.
             now_mono = time.monotonic_ns()
             now_ros = node.get_clock().now().nanoseconds
-            stamps = []
-            issues = []
-            for key, (message, received) in latest.items():
-                stamp = stamp_ns(message)
-                if not 0 <= now_mono - received <= MAX_AGE_NS:
-                    issues.append(f"Stale received observation: {key}")
-                if not 0 <= now_ros - stamp <= MAX_AGE_NS:
-                    issues.append(f"Stale/future ROS timestamp: {key} (age={(now_ros-stamp)/1e6:.3f} ms)")
-                stamps.append(stamp)
-            span = max(stamps) - min(stamps)
-            if span > MAX_SPREAD_NS:
-                issues.append(f"Multimodal observation timestamps are not synchronized (span={span/1e6:.3f} ms, limit={MAX_SPREAD_NS/1e6:.3f} ms)")
-            if not issues:
-                break
-            timing_failure = "; ".join(issues)
+            try:
+                selected, alignment_mode = select_aligned_observation(
+                    latest, self.histories, now_ros=now_ros, now_mono=now_mono)
+            except ValueError as error:
+                timing_failure = str(error)
+                continue
+            if not self.cameras_ready(now_mono):
+                timing_failure = f"Waiting for three camera streams stable for {self.startup_stable_s:g}s"
+                continue
+            break
         else:
             missing = sorted(set(TOPICS) - set(latest))
             if missing:
                 raise TimeoutError(f"Missing ROS observations: {missing}")
             raise TimeoutError(f"No valid ROS observation snapshot within {timeout_s:g}s: {timing_failure}")
-        state = sum((ordered_state(latest[f"{side}_{kind}"][0], side, kind == "hand")
+        state = sum((ordered_state(selected[f"{side}_{kind}"][0], side, kind == "hand")
                      for side, kind in (("left", "arm"), ("left", "hand"), ("right", "arm"), ("right", "hand"))), [])
         serialization_start = time.monotonic_ns()
         result = {
             "state": state,
-            "images": {key: rgb_image(latest[key][0]) for key in ("cam0", "cam1", "cam2")},
-            "topic_stamp_ns": {key: stamp_ns(value[0]) for key, value in latest.items()},
+            "images": {key: rgb_image(selected[key][0]) for key in ("cam0", "cam1", "cam2")},
+            "topic_stamp_ns": {key: stamp_ns(value[0]) for key, value in selected.items()},
             "captured_monotonic_ns": now_mono,
+            "alignment": {"mode": alignment_mode,
+                          "source_age_ms": {key: (now_ros-stamp_ns(value[0]))/1e6 for key, value in selected.items()},
+                          "source_span_ms": (max(stamp_ns(v[0]) for v in selected.values())
+                                             - min(stamp_ns(v[0]) for v in selected.values()))/1e6},
         }
         result["timing"] = {"snapshot_ready_monotonic_ns": now_mono,
                             "observation_encoding_ms": (time.monotonic_ns()-serialization_start)/1e6}
@@ -177,7 +254,7 @@ def write_snapshot(result):
 def persistent_main():
     """Read-only request/reply worker; idle time continues to spin subscriptions."""
     import select
-    provider = ObservationProvider()
+    provider = ObservationProvider(startup_stable_s=3.0)
     try:
         while True:
             if not select.select([sys.stdin], [], [], 0)[0]:

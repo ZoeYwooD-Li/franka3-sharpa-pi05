@@ -19,6 +19,8 @@ ERROR_GROUPS = {
     "right_sharpa": RIGHT_SHARPA_SLICE,
 }
 
+HOME_TOLERANCE_RAD = 0.015
+
 
 def target_chunk(target):
     target = np.asarray(target, dtype=np.float32)
@@ -120,14 +122,17 @@ class SlowApproach:
 
 def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                            *, num_chunks=1, speed_rad_s=0.03,
-                           execute_speed_scale=1.0, trace_writer=None):
+                           execute_speed_scale=1.0, trace_writer=None, execute_steps=50,
+                           initial_target=None, home_metadata=None):
     """Prepare once, then reobserve/infer/execute; zero chunks means until Ctrl-C.
 
-    Keep the complete action horizon. The backend bridges to each newly
-    predicted first target; it never reuses the prediction made before prepare.
+    Retain full predictions for audit, execute only the requested prefix, then
+    reobserve. An explicit initial target prepares Home without a model call.
     """
     if type(num_chunks) is not int or num_chunks < 0:
         raise ValueError("num_chunks must be a nonnegative integer (0 = continuous)")
+    if type(execute_steps) is not int or not 1 <= execute_steps <= 50:
+        raise ValueError("execute_steps must be an integer in [1, 50]")
     results = []
     count = 0
     prepared = None
@@ -143,12 +148,20 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
             trace_writer.event(name, chunk_index=count, **fields)
 
     try:
-        event("initial_inference")
-        metadata, initial_actions, _ = infer(initial_observation)
-        initial_actions = as_finite_action_chunk(initial_actions)
-        event("prepare", target=initial_actions[0].tolist(), speed_rad_s=speed_rad_s)
-        prepared = transport.request({"operation": "prepare", "target": initial_actions[0].tolist(),
-                                      "speed_rad_s": speed_rad_s})
+        if initial_target is None:
+            event("initial_inference")
+            metadata, initial_actions, _ = infer(initial_observation)
+            target = as_finite_action_chunk(initial_actions)[0]
+        else:
+            target = target_chunk(initial_target)[0]
+        tolerance = HOME_TOLERANCE_RAD if initial_target is not None else 0.049
+        event("prepare", target=target.tolist(), speed_rad_s=speed_rad_s,
+              tolerance_rad=tolerance, home=home_metadata)
+        prepared = transport.request({"operation": "prepare", "target": target.tolist(),
+                                      "speed_rad_s": speed_rad_s,
+                                      "tolerance_rad": tolerance})
+        if home_metadata is not None:
+            prepared["home"] = home_metadata
         if prepared.get("status") != "PASS":
             raise RuntimeError("Prepare did not pass; chunks blocked")
         event("prepare_complete", report=prepared)
@@ -166,10 +179,11 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                 trace_path = trace_writer.begin_chunk(
                     chunk_index=count, metadata=metadata,
                     observation_before=observation, actions=actions,
-                    adapted_chunk=adapted_chunk)
-            event("execute")
+                    adapted_chunk=adapted_chunk, execute_steps=execute_steps)
+            event("execute", predicted_steps=50, execute_steps=execute_steps)
             command_started = time.monotonic()
             completed = transport.request({"operation": "chunk", "actions": actions.tolist(),
+                                           "execute_steps": execute_steps,
                                            "execute_speed_scale": execute_speed_scale,
                                            "approach_speed_rad_s": speed_rad_s})
             if completed.get("status") != "PASS":
@@ -196,7 +210,8 @@ def prepare_and_run_chunks(infer, acquire_after, transport, initial_observation,
                     execution_report=completed)
         report = {"mode": "execute", "status": "COMPLETE", "prepare": prepared, "chunks": results,
                   "checkpoint": metadata["checkpoint"], "norm_stats": metadata["norm_stats"],
-                  "action_shape": [50, 58], "action_hz": FPS, "num_chunks": count,
+                  "action_shape": [50, 58], "execute_steps": execute_steps,
+                  "action_hz": FPS, "num_chunks": count,
                   "published": bool(prepared.get("published", False) or any(r.get("published", False) for r in results))}
         if trace_writer is not None:
             trace_writer.finish_run(report)

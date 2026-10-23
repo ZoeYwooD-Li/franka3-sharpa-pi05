@@ -102,6 +102,12 @@ def validate_gateway_graph(node) -> None:
         raise RuntimeError("Safety Gateway is not subscribed to ArmCommand")
 
 
+def validate_gateway_admission(node) -> None:
+    """Fail before SDK connection or command publishers if OpenPI is not admitted."""
+    validate_gateway_graph(node)
+    _require_parameter(node, "teleop_safety_gateway", "allowed_sources", [config.SOURCE])
+
+
 def validate_guarded_graph(node) -> None:
     if node.get_node_names().count("sharpa_driver") != 1:
         raise RuntimeError("Missing/duplicate sharpa_driver; commands stopped")

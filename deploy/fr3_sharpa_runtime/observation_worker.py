@@ -12,6 +12,7 @@ class ObservationWorker:
                                         text=True, bufsize=1)
         self.responses = queue.Queue()
         self.lock = threading.Lock()
+        self.snapshot_ready = False
         def read():
             for line in self.process.stdout:
                 self.responses.put(line)
@@ -19,7 +20,9 @@ class ObservationWorker:
         self.reader = threading.Thread(target=read, daemon=True)
         self.reader.start()
 
-    def snapshot(self, timeout_s=5.0):
+    def snapshot(self, timeout_s=None):
+        if timeout_s is None:
+            timeout_s = 5.0 if self.snapshot_ready else 15.0
         with self.lock:
             if self.process.poll() is not None:
                 raise RuntimeError(f"ROS observation worker exited {self.process.returncode}")
@@ -33,6 +36,8 @@ class ObservationWorker:
                 raise TimeoutError("ROS observation worker response timed out")
             if line is None:
                 raise RuntimeError("ROS observation worker closed without a response")
+            if "error" not in json.loads(line):
+                self.snapshot_ready = True
             return line
 
     def close(self):

@@ -1,5 +1,14 @@
 # Extend the existing camera runtime without starting its bag recorder.
 services:
+  teleop-control:
+    volumes:
+      - ${SHARPA_GATEWAY_CONFIG:?Run setup_local.py first}:/etc/openpi/teleop_control.yaml:ro
+    command:
+      - ros2
+      - launch
+      - teleop_core
+      - control.launch.py
+      - config:=/etc/openpi/teleop_control.yaml
   openpi-cameras:
     extends:
       file: ${SHARPA_GELLO_REPO:-/home/user/gello_upper_body_teleop}/docker/compose.yaml

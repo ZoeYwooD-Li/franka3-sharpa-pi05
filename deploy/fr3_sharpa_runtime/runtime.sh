@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$ROOT/deploy/fr3_sharpa_runtime/env.sh"
 # Offline inspection must work without the robot workstation or ROS overlay.
 previous=""
 for argument in "$@"; do
   if [[ "$argument" == --check || "$argument" == --help || "$argument" == -h || "$argument" == --mode=check || ( "$previous" == --mode && "$argument" == check ) ]]; then
     cd "$ROOT"
-    exec uv run --no-sync python -m deploy.fr3_sharpa_runtime.run "$@"
+    sharpa_python -m deploy.fr3_sharpa_runtime.run "$@"
+    exit $?
   fi
   previous="$argument"
 done
@@ -25,5 +27,13 @@ fi
   exit 1
 }
 cd "$ROOT"
-exec uv run --no-sync python -m deploy.fr3_sharpa_runtime.run \
+MODULE=deploy.fr3_sharpa_runtime.run
+previous=""
+for argument in "$@"; do
+  if [[ "$argument" == --execute || "$argument" == --mode=execute || ( "$previous" == --mode && "$argument" == execute ) ]]; then
+    MODULE=deploy.fr3_sharpa_runtime.hardware_session
+  fi
+  previous="$argument"
+done
+sharpa_python -m "$MODULE" \
   --ros-overlay "$ROS_MESSAGES_OVERLAY" "$@"

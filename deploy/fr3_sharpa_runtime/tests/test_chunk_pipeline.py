@@ -47,6 +47,7 @@ class SimulatedRobot:
         else:
             frames, _ = chunk_command_frames(payload["actions"], self.state,
                 speed_scale=payload["execute_speed_scale"],
+                execute_steps=payload.get("execute_steps", 50),
                 approach_speed_rad_s=payload["approach_speed_rad_s"])
             def send(frame):
                 self.state = frame.copy()
@@ -63,6 +64,66 @@ def policy(obs):
     chunk = SharpaActionAdapter().adapt_chunk(actions, start_timestamp_ns=1_000_000_000,
                                              session_id="test", source="openpi")
     return {"checkpoint": "test", "norm_stats": "test"}, actions, chunk
+
+
+def test_fixed_home_precedes_inference_and_each_round_executes_only_fifteen(tmp_path):
+    robot = SimulatedRobot()
+    home = np.full(58, 0.02, dtype=np.float32)
+    observations = []
+    traces = ExecutionTraceWriter(tmp_path)
+    def infer(obs):
+        observations.append(obs["observation/state"].copy())
+        return policy(obs)
+    report = prepare_and_run_chunks(infer, robot.observe, robot, robot.observe(),
+        initial_target=home, home_metadata={"kind": "fixed_arm_home"},
+        num_chunks=2, execute_steps=15, trace_writer=traces)
+    increment = np.linspace(0.005, 0.03, 50, dtype=np.float32)[14]
+    assert robot.operations == ["prepare", "chunk", "chunk"]
+    assert len(observations) == 2  # No inference before Home.
+    np.testing.assert_allclose(observations[0], home)
+    np.testing.assert_allclose(observations[1], home + increment)
+    np.testing.assert_allclose(robot.state, home + 2 * increment)
+    assert report["execute_steps"] == 15
+    for path in traces.paths:
+        record = json.loads(open(path).read())
+        assert len(record["policy_output_unnormalized"]) == 50
+        assert record["planned_execute_steps"] == 15
+        assert record["planned_action_indices"] == [0, 14]
+
+
+def test_continuous_home_prefix_execution_reaches_five_rounds_and_stops_on_interrupt(tmp_path):
+    robot = SimulatedRobot()
+    traces = ExecutionTraceWriter(tmp_path)
+    predictions = 0
+    def infer(obs):
+        nonlocal predictions
+        if predictions == 5:
+            raise KeyboardInterrupt()
+        predictions += 1
+        return policy(obs)
+    with pytest.raises(KeyboardInterrupt):
+        prepare_and_run_chunks(infer, robot.observe, robot, robot.observe(),
+            initial_target=np.zeros(58), num_chunks=0, execute_steps=15, trace_writer=traces)
+    assert robot.operations == ["prepare"] + ["chunk"] * 5
+    report = json.loads(traces.run_path.read_text())
+    assert report["num_chunks"] == 5 and report["status"] == "INTERRUPTED"
+    assert len(traces.paths) == 5
+    assert all(json.loads(open(path).read())["planned_execute_steps"] == 15 for path in traces.paths)
+    increment = np.linspace(0.005, 0.03, 50, dtype=np.float32)[14]
+    np.testing.assert_allclose(robot.state, 5 * increment)
+
+
+def test_home_failure_prevents_any_policy_inference():
+    robot = SimulatedRobot()
+    def infer(obs):
+        pytest.fail("No inference before Home is settled")
+    class RejectHome:
+        def request(self, payload):
+            assert payload["operation"] == "prepare"
+            return {"status": "FAIL"}
+    with pytest.raises(RuntimeError, match="Prepare"):
+        prepare_and_run_chunks(infer, robot.observe, RejectHome(), robot.observe(),
+            initial_target=np.zeros(58), execute_steps=15)
 
 
 def test_prepare_then_five_complete_chunks_reobserve_actual_end_state(tmp_path):
@@ -139,6 +200,8 @@ def test_execute_defaults_to_direct_policy_prepare_and_accepts_continuous(monkey
     assert captured["sharpa_backend"] == "sdk_direct"
     assert captured["prepare_policy_first"] is True
     assert captured["num_chunks"] == 0
+    assert captured["execute_steps"] == 15
+    assert captured["initialization"] == "home"
 
 
 def test_initial_inference_failure_releases_sdk_worker(monkeypatch, tmp_path):
