@@ -109,7 +109,8 @@ def test_normal_or_failed_runtime_always_cleans_up(monkeypatch, exit_status):
     assert cleaned == [True]
 
 
-def test_ctrl_c_forwards_to_runtime_tree_then_cleans_up(monkeypatch):
+@pytest.mark.parametrize("termination", [signal.SIGINT, signal.SIGTERM])
+def test_termination_forwards_to_runtime_tree_then_cleans_up(monkeypatch, termination):
     handlers, events = {}, []
 
     def install(number, handler):
@@ -118,9 +119,9 @@ def test_ctrl_c_forwards_to_runtime_tree_then_cleans_up(monkeypatch):
         return old
 
     def wait(**kwargs):
-        handlers[signal.SIGINT](signal.SIGINT, None)
+        handlers[termination](termination, None)
         events.append("child_stopped")
-        return 130
+        return 128 + termination
 
     monkeypatch.setattr(session.signal, "signal", install)
     monkeypatch.setattr(session.os, "killpg", lambda pid, number: events.append((pid, number)))
@@ -128,8 +129,19 @@ def test_ctrl_c_forwards_to_runtime_tree_then_cleans_up(monkeypatch):
         session.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(pid=123, poll=lambda: None, wait=wait)
     )
     status = session.run_session(["unused"], SimpleNamespace(cleanup=lambda: events.append("cleanup")))
-    assert status == 130
-    assert events == [(123, signal.SIGINT), "child_stopped", "cleanup"]
+    assert status == 128 + termination
+    assert events == [(123, termination), "child_stopped", "cleanup"]
+
+
+def test_handover_during_cleanup_preserves_the_controller(hardware, monkeypatch):
+    obj, current, calls = hardware
+    after = copy.deepcopy(current)
+    after["teleop-control"]["Id"] = "teleop-took-over"
+    inventories = iter([current, after])
+    monkeypatch.setattr(obj, "inventory", lambda: next(inventories))
+    obj.cleanup()
+    assert ["docker", "rm", "teleop-control-original"] in calls
+    assert not any(command[-1] == "franka-control-original" for command in calls)
 
 
 def test_runtime_launch_failure_still_releases_hardware(monkeypatch):
