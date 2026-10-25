@@ -94,9 +94,11 @@ bash deploy/fr3_sharpa_runtime/runtime.sh \
 
 ## 现场运行
 
+按三个终端顺序复制的完整本机命令（含 Home 同步、预热成功信息、持续执行、停止和日志查询）见 [根 README 的完整启动说明](../../README.md#完整启动持续执行与停止)。下文说明各服务职责和执行边界。
+
 以下命令会启动现场硬件依赖或发送运动指令，应在完成现场观测、设备身份和环境检查后使用。本轮本机配置验证没有执行这些命令。
 
-启动依赖：
+终端一，启动依赖：
 
 ```bash
 bash deploy/fr3_sharpa_runtime/hardware.sh up
@@ -104,13 +106,13 @@ bash deploy/fr3_sharpa_runtime/hardware.sh up
 
 此入口仅启动 `franka-control`、采用独立 OpenPI 网关配置的 `teleop-control` 和只运行三路相机的 `openpi-cameras`；无需另一个 `compose.openpi.yaml`，不启动 bag recorder 或旧 sharpa_driver。会复用既有 Compose 项目中的同名服务；已有遥操任务运行时应先结束该任务。不要同时启动旧 sharpa_driver 和 sdk_direct，两者不能共同拥有灵巧手设备。
 
-终端 1：
+终端二，模型服务：
 
 ```bash
 bash deploy/fr3_sharpa_runtime/serve.sh
 ```
 
-终端 2，首次只执行一段：
+终端三，首次只执行一轮：
 
 ```bash
 bash deploy/fr3_sharpa_runtime/runtime.sh \

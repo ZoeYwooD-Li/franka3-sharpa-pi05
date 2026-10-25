@@ -23,32 +23,109 @@
 
 归一化统计自动读取该 checkpoint 的 `assets/tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz/norm_stats.json`。更换路径时，在两个终端设置相同的 `SHARPA_CHECKPOINT`；不要替换为其他实验的统计。
 
-## 两个终端启动
+## 完整启动、持续执行与停止
 
-先按 [runtime 部署说明](deploy/fr3_sharpa_runtime/README.md)生成 `.deployment/local.env`，运行离线检查，再在现场启动 ROS、相机和机械臂依赖。首次真机测试只执行一个 chunk。
+**第一次拉取仓库请先阅读 [新机器部署与研究交接](docs/SHARPA_HANDOFF.md)。**下列命令面向当前已配置的机器，不是从零安装步骤。换机器请替换每段 `cd` 的仓库路径，并先生成自己的 `.deployment/local.env`。权重、SDK、现场配置、双臂 Home 和固定双手 Home 不会随 git clone 下载。
 
-终端一，加载权重、预热并启动推理服务：
+本机启动脚本会自动读取 `.deployment/local.env` 并使用选定的 Python，不需要手动激活虚拟环境。请使用新的终端，或确认未遗留覆盖本机配置的 `SHARPA_*` 环境变量。
+
+### 启动前：需要时同步双臂 Home
+
+GUI 修改过双臂 Home 后，先同步到部署快照；没有更新时可跳过。同步不会覆盖 `.deployment/hand_home.json` 的固定双手配置。
 
 ```bash
-cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test/deploy/fr3_sharpa_runtime
-./serve.sh
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test
+source deploy/fr3_sharpa_runtime/env.sh
+"$SHARPA_PYTHON" -m deploy.fr3_sharpa_runtime.home_pose \
+  --source /home/descfly/franka_teleop_data/operator_gui/poses.yaml \
+  --task powder_weighing \
+  --via-docker
 ```
 
-终端二，下列命令连接设备并驱动机器人：
+这里的 Docker 仅用于读取 root 专属权限的 poses.yaml，采用无网络、只读挂载，不启动设备。双手配置需要单独交接或标定；当前固定 Home 模式缺少手部配置会报错，不会自动改为保持启动时姿态。
+
+### 终端一：检查配置并启动硬件依赖
+
+先结束已有遥操任务和旧 `sharpa_driver`，避免与 sdk_direct 同时占用设备。前三条命令只检查配置，不连接设备；`hardware.sh check` 成功时可能没有输出。
 
 ```bash
-cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test/deploy/fr3_sharpa_runtime
-./runtime.sh --execute --enable-hardware \
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test
+
+bash deploy/fr3_sharpa_runtime/hardware.sh check
+bash deploy/fr3_sharpa_runtime/serve.sh --check-only
+bash deploy/fr3_sharpa_runtime/runtime.sh \
+  --check --initialization home --execute-steps 15 --speed slow --num-chunks 0
+
+# 以下命令启动现场硬件服务
+bash deploy/fr3_sharpa_runtime/hardware.sh up
+
+docker ps --format 'table {{.Names}}\t{{.Status}}'
+```
+
+`up` 启动机械臂控制、使用 OpenPI 配置的 Safety Gateway 和三路相机，不启动旧 sharpa_driver 或 bag recorder。容器显示 Running 只说明进程状态，不能代替设备及实时观测检查。
+
+### 终端二：启动模型服务
+
+```bash
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test
+bash deploy/fr3_sharpa_runtime/serve.sh
+```
+
+等待出现以下预热成功信息，以及服务监听 `127.0.0.1:18765` 的信息，再运行执行端。保持终端二运行。
+
+```text
+Warmup OK: actions=(50, 58), full, absolute, 30 Hz
+```
+
+### 终端三：启动机器人持续执行
+
+**以下命令连接设备并发送运动指令。**首次现场验证应先将最后的 `--num-chunks 0` 改成 `--num-chunks 1`，完成单轮检查后再持续运行。
+
+```bash
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test
+
+bash deploy/fr3_sharpa_runtime/runtime.sh \
+  --execute \
+  --enable-hardware \
+  --sharpa-backend sdk_direct \
+  --initialization home \
+  --home-task powder_weighing \
   --prepare-speed-rad-s 0.03 \
+  --execute-steps 15 \
   --speed slow \
-  --execute-steps 15 --num-chunks 1
+  --num-chunks 0
 ```
 
-执行流程：到配置的双臂 Home、双手到固定 Home → 到位并稳定 → 新观测、预测 50 帧 → 衔接并执行前 15 帧 → 新观测和新推理，进入下一轮。Home 源文件及快照同步方式见 runtime 说明。
+执行过程与参数：
 
-`--num-chunks 0` 持续运行到 Ctrl-C；任意正整数指定轮数，没有 chunk1/chunk2 上限。`--execute-steps 15` 控制每轮实际执行的动作数，模型始终预测 50 帧。`--execute-speed-scale 0.1` 将每对模型动作点分为 10 步并保持 30 Hz 下发，15 帧主体约 4.70 秒，另加 prepare、首帧衔接、观测及推理时间。没有自动判定番茄任务完成的逻辑。prepare 为关节空间插值，不包含环境碰撞规划。
+- 双臂读取 poses.yaml 快照中的 `tasks.powder_weighing.home`，双手读取 `.deployment/hand_home.json` 的固定目标，一起低速到位并稳定。**当前版本双手不是保持启动时姿态。**
+- 每轮模型预测 50×58，只执行索引 0–14 的 15 个动作，丢弃后 35 个，再采集真实观测并重新推理。完整预测和执行步数写入日志。
+- `--num-chunks 0` 持续运行，不限于 chunk1/chunk2；任意正整数表示运行对应轮数。Ctrl-C 或观测、推理、执行失败会结束循环。没有自动判断番茄任务完成的功能。
+- `--speed slow` 对应时间倍率 0.1，15 帧主体为 141 个 30 Hz 下发点，约 4.70 秒；不含首帧衔接、观测和推理。medium=0.5、fast=1.0；不指定速度时默认 fast。`--speed` 不与 `--execute-speed-scale` 混用。
+- prepare 速度为 0.03 rad/s，采用关节空间插值，不包含环境碰撞规划。当前代码还默认启用手部预测小幅越界裁剪 `--prediction-clip-rad 0.05`，其范围及审计含义见 [runtime 说明](deploy/fr3_sharpa_runtime/README.md#预测动作小幅越界裁剪)。
 
-速度可选 `--speed slow`（0.1）、`medium`（0.5）、`fast`（1.0），共用同一执行器。参数含义及当前功能边界见 [部署结构](deploy/fr3_sharpa_runtime/ARCHITECTURE.md)。模型层负责训练方式和参数结构，执行层只使用统一动作契约。
+### 停止顺序
+
+1. 先在终端三按 Ctrl-C。当前会话管理器会结束 runtime/SDK 子进程，并按容器身份清理本次部署所属的相机、OpenPI 网关和对应机械臂控制器；不自动回 Home。
+2. 再在终端二按 Ctrl-C，停止独立的模型服务。
+3. 若只启动了硬件而未启动执行端，或退出后仍有部署容器遗留，在终端一显式重试清理：
+
+```bash
+cd /home/descfly/LTT/franka3-sharpa-pi05-chunk-base-test
+bash deploy/fr3_sharpa_runtime/hardware.sh stop
+```
+
+`stop` 可重复运行，使用归属核验，不对整个硬件项目执行 down。SIGKILL、断电或 Docker 不可用时不能保证自动清理完成；遇到清理错误应确认实际容器状态。详细归属检查和遥操接管行为见 [runtime 说明](deploy/fr3_sharpa_runtime/README.md#现场运行)。
+
+### 运行记录
+
+本机默认目录：`/home/descfly/.local/state/fr3_sharpa_runtime/execution_traces/`，可用 `--execution-trace-dir` 或 `SHARPA_EXECUTION_TRACE_DIR` 覆盖。包含 chunk JSON、events.jsonl 和 run.json。
+
+```bash
+ls -lt /home/descfly/.local/state/fr3_sharpa_runtime/execution_traces/
+```
+
+`COMPLETE` 表示指令下发完成，不表示任务成功。模型加载、单元测试和离线 dry-run 的通过记录不能代替本次现场运动验收。启动及运行限制详见 [runtime 部署说明](deploy/fr3_sharpa_runtime/README.md)，模型与执行层结构见 [架构说明](deploy/fr3_sharpa_runtime/ARCHITECTURE.md)。
 
 ## 检查与验证
 
@@ -81,6 +158,30 @@ bash deploy/fr3_sharpa_runtime/serve.sh --smoke-only
 | `packages/openpi-client/` | WebSocket 客户端 |
 | `docs/` | 通用 OpenPI 参考资料与文档索引 |
 
-当前全量模型的训练配方参考独立工程 `/home/descfly/LTT/tomato-openpi`。本仓库历史 Sharpa LoRA 配置不用于加载当前全量权重。旧平台部署和实验代码已从当前分支移除，可通过 Git 历史查阅。
+## 训练来源、当前加载配置与历史版本
+
+本仓库负责部署。当前权重由 `deploy/fr3_sharpa_runtime/model_loader.py::build_config()` 加载：`gemma_2b` + `gemma_300m`、无 LoRA、`action_dim=58`、`action_horizon=50`、`max_token_len=256`、30 Hz、`extra_delta_transform=False`。推理配置名为 `pi05_fr3_sharpa_ab4_normal_rgb_fullft_absolute_30hz_deploy`，它不是恢复出来的原始训练实验名。
+
+训练参考工程是 [fruit-train/tomato-openpi](https://gitlab.litchibot.top/fruit-train/tomato-openpi)，本次文档核对版本为 `68440ed8b39693b5fd206403843901187f453c1c`。本机路径 `/home/descfly/LTT/tomato-openpi` 仅是该工程的一个 clone，不是其他人必须创建的目录。具体来源如下：
+
+| 参考工程中的文件 | 用途 |
+| --- | --- |
+| `training_configs/experiments/tomato_sharpa/baseline/tomato_fr3_sharpa_fullft_v1.py` | Sharpa 全参 baseline，定义任务文本、数据身份和实验配置名 |
+| `training_configs/recipes/pi05_fullft_v1.py` | 选择无 LoRA 的 Gemma 变体，全参数训练，baseline 全局 batch=64 |
+| `training_configs/recipes/common.py` | 模型窗口、优化器、学习率、随机种子和 checkpoint 保存规则 |
+| `training_configs/embodiments/fr3_sharpa.py` | 58D、rad、absolute、30 Hz 和三路相机角色 |
+
+**这些文件是可核查的训练参考，不是 4000 步权重完整的复现记录。**参考 baseline 的 asset_id 为 `tomato_sharpa_fulltask_v1_absolute_30hz`，当前权重携带的是 `tomato_sharpa_ab4_normal_rgb_absolute_v1_30hz`；原始 AB4 实验模块、服务器启动参数、数据清单与采样比例尚未取得，不能据此声称可重训得到同一权重。详细参数和待补交接材料见 [训练与资产溯源](docs/SHARPA_HANDOFF.md#训练参考与权重溯源)。
+
+本仓库 `src/openpi/training/config.py` 中的 `pi05_fr3_sharpa`、`pi05_fr3_sharpa_tier_a_b1_20hz`、`pi05_fr3_sharpa_a04_b05_c01_30hz` 是保留的历史 LoRA 配置，包含 LoRA 变体和双臂 delta 变换。当前 `serve.sh` 使用上述独立 model_loader，不选择这些历史配置；不要只把 checkpoint 路径替换到旧配置里加载。
+
+旧 Wuji 部署和 `experiments/weight_motion_eval` 在 `c60b4c2612020d641ed3003a82cd8ab5d143f4fc` 清理。清理前版本是 `bbe7f697e17a220ca91fae10b1812322b0741fa2`，可在不切换当前分支的情况下查阅：
+
+```bash
+git show bbe7f697e17a220ca91fae10b1812322b0741fa2:deploy/fr3_wuji_fast/README.md
+git ls-tree -r --name-only bbe7f697e17a220ca91fae10b1812322b0741fa2 -- deploy/ experiments/
+```
+
+旧实现包括 Wuji 设备协议、54D/其他模型映射和 RTG/Ruckig 方案，不是当前 Sharpa 的可运行入口。当前功能与历史设计的差异见 [架构说明](deploy/fr3_sharpa_runtime/ARCHITECTURE.md)和 [Wuji 历史参考](docs/reference_wuji_architecture.md)。
 
 权重、训练数据、运行日志和本机构建产物不提交 Git。许可证见 [LICENSE](LICENSE) 和 [LICENSE_GEMMA.txt](LICENSE_GEMMA.txt)。
