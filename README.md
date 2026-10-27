@@ -1,6 +1,6 @@
 # FR3 + Sharpa π0.5 番茄任务部署
 
-双 FR3 机械臂、双 Sharpa 灵巧手的视觉语言动作模型工程。当前部署使用 **π0.5 全量微调、30 Hz、原生 58 维绝对关节目标**。
+双 FR3 机械臂、双 Sharpa 灵巧手的视觉语言动作模型工程。当前真机部署使用 **π0.5 全量微调、30 Hz、原生 58 维绝对关节目标**。T-Rex 的独立适配代码正在 [deploy/fr3_sharpa_runtime/trex/README.md](deploy/fr3_sharpa_runtime/trex/README.md) 开发，尚无真机下发入口。
 
 ## 当前配置
 
