@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .contract import ACTION_DIM, ACTION_HORIZON, validate_checkpoint
+from .contract import ACTION_DIM, ACTION_HORIZON, IMAGE_SIZE, validate_checkpoint
 
 
 def _load_official_server(trex_repo: Path):
@@ -35,7 +35,7 @@ def _load_official_server(trex_repo: Path):
 def _png_black() -> bytes:
     from PIL import Image
     buffer = io.BytesIO()
-    Image.new("RGB", (224, 224), "black").save(buffer, format="PNG")
+    Image.new("RGB", IMAGE_SIZE, "black").save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -54,7 +54,7 @@ def build_server(trex_repo, checkpoint, cuda):
     args.action_dim = ACTION_DIM
     args.action_chunk = ACTION_HORIZON
     args.cuda = str(cuda)
-    args.image_size = None
+    args.image_size = IMAGE_SIZE
     args.disable_tactile = 0
     model, processor, statistics = official.model_load(args)
     server = official.CascadedServer(args, model, processor, statistics)
@@ -69,7 +69,9 @@ def build_server(trex_repo, checkpoint, cuda):
         raise RuntimeError(f"T-Rex warmup returned invalid action shape {actions.shape}")
     metadata = {"status": "success", "checkpoint": contract["checkpoint"],
                 "action_shape": [ACTION_HORIZON, ACTION_DIM],
-                "urdf_sha256": contract["urdf_sha256"], "warmed_up": True}
+                "urdf_sha256": contract["urdf_sha256"], "warmed_up": True,
+                "checkpoint_kind": contract["checkpoint_kind"],
+                "image_size": list(IMAGE_SIZE)}
     return server, metadata
 
 
@@ -84,7 +86,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     contract = validate_checkpoint(args.checkpoint)
     if args.check_only:
-        print(json.dumps({key: contract[key] for key in ("checkpoint", "action_shape", "urdf_sha256")}, indent=2))
+        print(json.dumps({key: contract[key] for key in ("checkpoint", "checkpoint_kind", "action_shape", "urdf_sha256")}, indent=2))
         return
     if args.trex_repo is None:
         parser.error("--trex-repo is required unless --check-only is set")

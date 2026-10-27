@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from deploy.fr3_sharpa_runtime.trex.client import TrexClient, slow_payload, tactile_payload
-from deploy.fr3_sharpa_runtime.trex.contract import URDF_SHA256
+from deploy.fr3_sharpa_runtime.trex.contract import IMAGE_SIZE, URDF_SHA256
 
 
 def test_tactile_order_and_image_routing_are_explicit():
@@ -47,7 +47,7 @@ def test_server_handshake_and_chunk_identity():
     client = TrexClient()
     client._socket = FakeSocket([
         {"status": "success", "checkpoint": "/weights", "action_shape": [16, 62],
-         "urdf_sha256": URDF_SHA256, "warmed_up": True},
+         "urdf_sha256": URDF_SHA256, "warmed_up": True, "image_size": list(IMAGE_SIZE)},
         {"status": "success", "chunk_id": 7, "actions": np.zeros((16, 62))},
         {"status": "success", "chunk_id": 8, "actions": np.zeros((16, 62))},
     ])
@@ -58,6 +58,16 @@ def test_server_handshake_and_chunk_identity():
         client.fast(np.zeros((16, 10, 6)), np.zeros((10, 240, 240)), 7)
     assert client._socket.sent[0] == {"mode": "hello"}
     assert client._socket.sent[1]["mode"] == "fast"
+
+
+def test_server_handshake_rejects_wrong_image_size():
+    client = TrexClient()
+    client._socket = FakeSocket([{
+        "status": "success", "checkpoint": "/weights", "action_shape": [16, 62],
+        "urdf_sha256": URDF_SHA256, "warmed_up": True, "image_size": [224, 224],
+    }])
+    with pytest.raises(ValueError, match="image size"):
+        client.hello("/weights")
 
 
 def test_remote_pickle_endpoint_is_rejected():

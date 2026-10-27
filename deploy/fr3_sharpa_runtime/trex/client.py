@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 from PIL import Image
 
-from .contract import ACTION_DIM, ACTION_HORIZON, URDF_SHA256
+from .contract import ACTION_DIM, ACTION_HORIZON, IMAGE_SIZE, URDF_SHA256
 
 
 def _image_bytes(value, label: str) -> bytes:
@@ -89,6 +89,8 @@ class TrexClient:
             raise ValueError("T-Rex server action shape does not match 16x62")
         if response.get("urdf_sha256") != URDF_SHA256 or response.get("warmed_up") is not True:
             raise ValueError("T-Rex server geometry or warmup differs from deployment")
+        if response.get("image_size") != list(IMAGE_SIZE):
+            raise ValueError("T-Rex server image size differs from training")
         if expected_checkpoint is not None:
             from pathlib import Path
             if response.get("checkpoint") != str(Path(expected_checkpoint).expanduser().resolve()):
