@@ -7,6 +7,7 @@ finger checkpoint and binds its pickle/ZMQ protocol to loopback only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import io
 import json
@@ -19,11 +20,32 @@ import numpy as np
 
 from .contract import ACTION_DIM, ACTION_HORIZON, IMAGE_SIZE, validate_checkpoint
 
+VENDORED_TREX = Path(__file__).resolve().parent / "vendor/trex"
+SOURCE_MANIFEST = Path(__file__).resolve().parent / "vendor/source_manifest.json"
+
+
+def verify_model_source(trex_repo: Path) -> None:
+    """Reject a model checkout that differs from the reviewed training code."""
+    expected = json.loads(SOURCE_MANIFEST.read_text(encoding="utf-8"))["sha256"]
+    for relative, digest in expected.items():
+        source = trex_repo / relative
+        if not source.is_file():
+            raise ValueError(f"T-Rex model source is missing {relative}: {trex_repo}")
+        actual = hashlib.sha256(source.read_bytes()).hexdigest()
+        if actual != digest:
+            raise ValueError(f"T-Rex model source differs from reviewed version: {relative}")
+
 
 def _load_official_server(trex_repo: Path):
+    verify_model_source(trex_repo)
     script = trex_repo / "scripts/test.py"
     if not script.is_file():
         raise ValueError(f"Official T-Rex scripts/test.py not found: {script}")
+    for package in ("qwen_vla", "tactile_vqvae"):
+        loaded = sys.modules.get(package)
+        location = getattr(loaded, "__file__", None)
+        if location is not None and not Path(location).resolve().is_relative_to(trex_repo.resolve()):
+            raise RuntimeError(f"{package} is already imported from another T-Rex checkout: {location}")
     sys.path.insert(0, str(trex_repo))
     sys.path.insert(0, str(script.parent))
     spec = importlib.util.spec_from_file_location("trex_official_inference", script)
@@ -78,7 +100,8 @@ def build_server(trex_repo, checkpoint, cuda):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Loopback T-Rex model server; no robot commands")
     parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument("--trex-repo", type=Path, help="Full official T-Rex repository")
+    parser.add_argument("--trex-repo", type=Path, default=VENDORED_TREX,
+                        help="Reviewed T-Rex source; defaults to the bundled copy")
     parser.add_argument("--cuda", default="0")
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--check-only", action="store_true", help="Validate checkpoint without loading CUDA")
@@ -88,8 +111,6 @@ def main(argv=None):
     if args.check_only:
         print(json.dumps({key: contract[key] for key in ("checkpoint", "checkpoint_kind", "action_shape", "urdf_sha256")}, indent=2))
         return
-    if args.trex_repo is None:
-        parser.error("--trex-repo is required unless --check-only is set")
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be in [1024,65535]")
     server, metadata = build_server(args.trex_repo, args.checkpoint, args.cuda)

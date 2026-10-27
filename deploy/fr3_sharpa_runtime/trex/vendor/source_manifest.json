@@ -1,0 +1,27 @@
+{
+  "upstream_url": "https://github.com/ZhuoyangLiu2005/T-Rex",
+  "upstream_commit": "ba4047ce3e9f3d2013d60de600e136897e90ccb8",
+  "adapter_source": "https://github.com/ZoeYwooD-Li/trex-sharpa-tomato",
+  "adapter_commit": "df2a12e70e2596cf0e28bd97bf31fc3b4c47554d",
+  "sha256": {
+    "scripts/test.py": "945d52175a5e76883d80c264b3c178ab6245cc3723ea3ea5194d8a9c3d6a265f",
+    "qwen_vla/__init__.py": "abc39f645ad280d47cbaa872cc09ca0b0c610403bec728c6fcfe765cfc1a021c",
+    "qwen_vla/modeling_vla.py": "0f5e0092944255e66b6d6d1b08ecb68022e81cbd79d4e3384df27d117f566201",
+    "qwen_vla/modeling_qwen3vl_mot.py": "804402152d9a8c2f99438eed6fe2a12f77a9317c594f836fa7a4c18ad4c929a3",
+    "qwen_vla/diffusion.py": "addc4ffee224346f58ae10075ddd6dd37e21a1396426aebdab5971bf87dcfaf6",
+    "qwen_vla/DeformAE.py": "70673237211044b7fc4ae82a6004c08a9d379dc9aadcb15faf4d20c48e8b5d1b",
+    "tactile_vqvae/__init__.py": "cc8817418954a0d2af4280aa4f21238580f67a87a47639772fb9853c840869c3",
+    "tactile_vqvae/data/__init__.py": "be87af4c92fdc6f1bcc64b6da610c572bcf841bd6f1b7633cfa32c66e5bbd47d",
+    "tactile_vqvae/data/dataset.py": "4f600862db84f69c988167029df30288a9abc27bd33108082c81b091f0472c71",
+    "tactile_vqvae/data/stats.py": "7c8a4430b835ada8a56af81c02100734f974ac48058810def46558c7f735c6fa",
+    "tactile_vqvae/eval.py": "319e586017aea3f9d32f0ee8af4f87b4d5ca4d7273e6a45d12e7848bd8c2bfea",
+    "tactile_vqvae/extract_codes.py": "edaa6292b7fb91e1e5b3fe4270852aaad7883c891c47d01017cd7dd320667854",
+    "tactile_vqvae/models/__init__.py": "0e5efff26963a58b6c0f51b564ecac87b9a94246b7c7ad59b8d5b1645d012dd0",
+    "tactile_vqvae/models/decoder.py": "094ef6785ba1409da15d4294dee2e9f7de09b2025769e373e7dadca72b02b04a",
+    "tactile_vqvae/models/encoder.py": "7cf6b161b81ffa332f24c6cab55ff43f4295519784a145d632846a204b7200a9",
+    "tactile_vqvae/models/quantizer.py": "1fa4b006bd712f9152e2b987945483ab9f923a838f2ee0d5cc4c261e0d378e40",
+    "tactile_vqvae/models/tactile_vqvae.py": "f16c5862437c3fbb2f0c81f5f139ec25319840c074b2f246af0f922e94b9ccfc",
+    "tactile_vqvae/scripts/inspect_exemplars.py": "e75e9b3427432d36c1cdeca032c4a5d75d40bfed40768f306da89c783ec3060a",
+    "tactile_vqvae/train.py": "624aec98c2d17eed6426fbece6e174a89c76a21921a55d7f79462050daad4d53"
+  }
+}
