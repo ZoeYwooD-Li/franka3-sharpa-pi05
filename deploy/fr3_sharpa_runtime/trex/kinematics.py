@@ -7,6 +7,7 @@ not account for calibration error, obstacles, or hand/tool geometry.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,10 @@ import numpy as np
 
 class IKError(ValueError):
     """A target cannot be represented safely by the nominal arm model."""
+
+    def __init__(self, message, *, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 def _xyz(value: str) -> np.ndarray:
@@ -69,6 +74,8 @@ class ArmKinematics:
     def __init__(self, urdf: str | Path, side: str):
         if side not in ("left", "right"):
             raise ValueError("FR3 side must be left or right")
+        self.side = side
+        self.urdf_sha256 = hashlib.sha256(Path(urdf).read_bytes()).hexdigest()
         base, tip = (f"{side}_fr3v2_link0", f"{side}_fr3v2_link8")
         expected = [f"{side}_fr3v2_joint{i}" for i in range(1, 8)]
         root = ET.parse(urdf).getroot()
@@ -139,8 +146,8 @@ class ArmKinematics:
     def forward(self, q) -> np.ndarray:
         return self.forward_jacobian(q)[0]
 
-    def inverse(self, target, seed, *, position_tolerance=0.001,
-                orientation_tolerance=0.005, max_iterations=100) -> np.ndarray:
+    def inverse(self, target, seed, *, position_tolerance=0.002,
+                orientation_tolerance=0.02, max_iterations=100) -> np.ndarray:
         """Solve from a measured/previous seed; reject if residual remains."""
         desired = np.asarray(target, dtype=np.float64)
         if desired.shape != (4, 4) or not np.isfinite(desired).all():
@@ -151,7 +158,10 @@ class ArmKinematics:
         q = self._validated_q(seed).copy()
         seed = q.copy()
         weight = np.diag([10., 10., 10., 1., 1., 1.])
+        iterations = 0
+        stop_reason = "iteration_limit"
         for _ in range(max_iterations):
+            iterations += 1
             actual, jacobian = self.forward_jacobian(q)
             position = desired[:3, 3] - actual[:3, 3]
             orientation = _orientation_error(desired[:3, :3], actual[:3, :3])
@@ -177,8 +187,23 @@ class ArmKinematics:
                     improved = True
                     break
             if not improved:
+                stop_reason = "line_search_no_improvement"
                 break
         reached = self.forward(q)
         position_error = np.linalg.norm(desired[:3, 3] - reached[:3, 3])
         orientation_error = np.linalg.norm(_orientation_error(desired[:3, :3], reached[:3, :3]))
-        raise IKError(f"link8 IK failed: position={position_error:.4f} m, orientation={orientation_error:.4f} rad")
+        diagnostics = {
+            "schema_version": 1, "side": self.side, "urdf_sha256": self.urdf_sha256,
+            "target": desired.tolist(), "seed": seed.tolist(), "final_q": q.tolist(),
+            "reached": reached.tolist(), "iterations": iterations, "stop_reason": stop_reason,
+            "position_error_m": float(position_error), "orientation_error_rad": float(orientation_error),
+            "position_tolerance_m": position_tolerance, "orientation_tolerance_rad": orientation_tolerance,
+            "max_iterations": max_iterations,
+            "position_within_tolerance": bool(position_error <= position_tolerance),
+            "orientation_within_tolerance": bool(orientation_error <= orientation_tolerance),
+            "joint_limit_margin_rad": np.minimum(q-self.lower, self.upper-q).tolist(),
+        }
+        raise IKError(
+            f"link8 IK failed: position={position_error:.17g} m, "
+            f"orientation={orientation_error:.17g} rad; stop={stop_reason}, iterations={iterations}",
+            diagnostics=diagnostics)

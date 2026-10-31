@@ -1,0 +1,10 @@
+services:
+  openpi-cameras:
+    volumes:
+      - ${TREX_CAMERA_CONFIG_DIR:?Missing T-Rex camera config}:/etc/trex/cameras:ro
+    command:
+      - ros2
+      - launch
+      - teleop_camera_bringup
+      - triple_camera.launch.py
+      - deployment_config:=/etc/trex/cameras/deployment.yaml

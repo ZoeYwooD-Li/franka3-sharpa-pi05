@@ -61,12 +61,19 @@ class TrexActionDecoder:
             raise ValueError("Measured robot state must be finite 58D")
         q_left, q_right = measured[:7].copy(), measured[29:36].copy()
         base_left, base_right = self.left.forward(q_left), self.right.forward(q_right)
-        decoded = np.empty((ACTION_HORIZON, STATE_DIM), dtype=np.float32)
+        # Preserve IK precision: casting an exact URDF limit to float32 can
+        # round outside the native range and fail the strict command check.
+        decoded = np.empty((ACTION_HORIZON, STATE_DIM), dtype=np.float64)
         for index, row in enumerate(policy):
             left_target = absolute_link8_pose(base_left, row[LEFT_ARM])
             right_target = absolute_link8_pose(base_right, row[RIGHT_ARM])
-            next_left = self.left.inverse(left_target, q_left)
-            next_right = self.right.inverse(right_target, q_right)
+            try:
+                next_left = self.left.inverse(left_target, q_left)
+                next_right = self.right.inverse(right_target, q_right)
+            except IKError as error:
+                if error.diagnostics is not None:
+                    error.diagnostics.update(action_index=index)
+                raise
             if (np.max(np.abs(next_left - q_left)) > self.max_joint_jump_rad
                     or np.max(np.abs(next_right - q_right)) > self.max_joint_jump_rad):
                 raise IKError(f"Decoded FR3 joint jump too large at action {index}")

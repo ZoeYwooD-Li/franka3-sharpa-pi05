@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import io
 import pickle
+import uuid
 
 import numpy as np
 from PIL import Image
 
+from .wire import encode, decode
 from .contract import ACTION_DIM, ACTION_HORIZON, IMAGE_SIZE, URDF_SHA256
+
+
+class TrexRequestTimeout(TimeoutError):
+    """A request timed out; a stateful request must never be blindly replayed."""
+    def __init__(self, endpoint, mode, stage, timeout_ms):
+        self.endpoint, self.mode, self.stage, self.timeout_ms = endpoint, mode, stage, timeout_ms
+        super().__init__(f'T-Rex {mode} {stage} timed out after {timeout_ms} ms at {endpoint}; '
+                         'check that T-Rex serve is running, has finished warmup and printed listening. '
+                         'The server may be unavailable or busy. Request was not retried; '
+                         'a stateful request may already have been accepted.')
 
 
 def _image_bytes(value, label: str) -> bytes:
@@ -16,7 +28,8 @@ def _image_bytes(value, label: str) -> bytes:
     if image.ndim != 3 or image.shape[-1] != 3 or image.dtype != np.uint8:
         raise ValueError(f"{label} must be HxWx3 uint8 RGB")
     buffer = io.BytesIO()
-    Image.fromarray(image).save(buffer, format="PNG")
+    # Lossless level 0 avoids ~50ms of three-camera compression per slow job.
+    Image.fromarray(image).save(buffer, format="PNG", compress_level=0)
     return buffer.getvalue()
 
 
@@ -54,8 +67,11 @@ class TrexClient:
             raise ValueError("T-Rex pickle protocol is only permitted on loopback")
         self.endpoint = endpoint
         self.timeout_ms = int(timeout_ms)
+        if self.timeout_ms <= 0:
+            raise ValueError('T-Rex request timeout must be positive')
         self._context = None
         self._socket = None
+        self._session_token = None
 
     def __enter__(self):
         import zmq
@@ -75,13 +91,45 @@ class TrexClient:
         self._socket = self._context = None
 
     def _request(self, payload):
+        import zmq
         if self._socket is None:
             raise RuntimeError("T-Rex client must be used within a context manager")
-        self._socket.send(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
-        response = pickle.loads(self._socket.recv())  # Trusted loopback server only.
+        if self._session_token is not None:
+            payload = {**payload, '_session': self._session_token}
+        stage = 'send'
+        try:
+            self._socket.send(pickle.dumps(encode(payload), protocol=pickle.HIGHEST_PROTOCOL))
+            stage = 'receive'
+            reply = self._socket.recv()
+        except zmq.ZMQError as error:
+            # REQ cannot send again while awaiting a lost reply. Discard it;
+            # never retry claim/slow/fast or let release mask the first error.
+            self._socket.close(linger=0)
+            self._socket = None
+            if isinstance(error, zmq.Again):
+                raise TrexRequestTimeout(self.endpoint, payload.get('mode'), stage, self.timeout_ms) from error
+            raise
+        response = decode(pickle.loads(reply))  # Trusted loopback server only.
         if not isinstance(response, dict) or response.get("status") != "success":
             raise RuntimeError(f"T-Rex server rejected request: {response!r}")
         return response
+
+    def claim(self):
+        token=uuid.uuid4().hex
+        response=self._request({'mode':'claim','token':token})
+        if response.get('exclusive_sessions') is not True:
+            raise RuntimeError('Restart T-Rex serve with the new exclusive-session support')
+        self._session_token=token
+        return response
+
+    def release(self):
+        if self._session_token is not None:
+            try:
+                if self._socket is not None: self._request({'mode':'release'})
+            finally: self._session_token=None
+
+    def keepalive(self):
+        return self._request({'mode':'keepalive'})
 
     def hello(self, expected_checkpoint=None):
         response = self._request({"mode": "hello"})

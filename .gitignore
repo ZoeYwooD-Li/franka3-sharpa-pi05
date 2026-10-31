@@ -2,6 +2,8 @@
 assets/
 checkpoints/
 data/
+!deploy/fr3_sharpa_runtime/trex/vendor/trex/tactile_vqvae/data/
+!deploy/fr3_sharpa_runtime/trex/vendor/trex/tactile_vqvae/data/*.py
 wandb/
 replay_checks/
 logs/
@@ -133,6 +135,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-trex/
+trex-local-records/
 env/
 venv/
 ENV/

@@ -1,0 +1,19 @@
+camera_bringup:
+  cam0:
+    net_device_ip: 192.168.1.123
+    net_device_port: 8090
+    serial_number: CP4N651006F
+    semantic: cam_high
+    config_file: /etc/trex/cameras/cam0_rgb.yaml
+    start_delay_sec: 4.0
+  cam1:
+    serial_number: CV2756100018
+    semantic: cam_right_wrist
+    config_file: camera_cam1_global_params.yaml
+    start_delay_sec: 2.0
+  cam2:
+    serial_number: CV2L761000F8
+    semantic: cam_left_wrist
+    config_file: camera_secondary_params.yaml
+    start_delay_sec: 0.0
+  log_level: none

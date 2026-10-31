@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -95,8 +96,13 @@ def validate_action_ranges(actions: np.ndarray, *, check_slew: bool = True) -> N
 
 
 def validate_gateway_graph(node) -> None:
-    if node.get_node_names().count("teleop_safety_gateway") != 1:
-        raise RuntimeError("Missing/duplicate teleop_safety_gateway; commands stopped")
+    names = node.get_node_names()
+    count = names.count("teleop_safety_gateway")
+    if count != 1:
+        environment = {key: os.environ.get(key, '<unset>') for key in
+                       ('ROS_DOMAIN_ID', 'ROS_LOCALHOST_ONLY', 'RMW_IMPLEMENTATION', 'CYCLONEDDS_URI')}
+        raise RuntimeError("Missing/duplicate teleop_safety_gateway; commands stopped; "
+                           f"observed_count={count}, visible_nodes={sorted(names)}, ROS={environment}")
     gateway = node.get_subscriptions_info_by_topic(config.FR3_TOPIC)
     if not any(item.node_name == "teleop_safety_gateway" for item in gateway):
         raise RuntimeError("Safety Gateway is not subscribed to ArmCommand")

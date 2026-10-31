@@ -114,6 +114,10 @@ def main(argv=None):
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be in [1024,65535]")
     server, metadata = build_server(args.trex_repo, args.checkpoint, args.cuda)
+    from .wire import encode, decode
+    from .execution_core import ExclusiveLease
+    lease = ExclusiveLease()
+    metadata['exclusive_sessions'] = True
     print(f"T-Rex warmup OK: {metadata['action_shape']}; checkpoint={metadata['checkpoint']}", flush=True)
     if args.warmup_only:
         return
@@ -126,15 +130,28 @@ def main(argv=None):
     try:
         while True:
             try:
-                request = pickle.loads(socket.recv())  # Trusted loopback client only.
+                request = decode(pickle.loads(socket.recv()))  # Trusted loopback client only.
                 if not isinstance(request, dict):
                     raise ValueError("T-Rex request must be a dictionary")
                 mode = request.get("mode")
-                response = metadata if mode == "hello" else server.predict(mode, request)
+                if mode == 'claim':
+                    lease.claim(request.get('token'))
+                    response = metadata
+                elif mode == 'release':
+                    lease.release(request.get('_session'))
+                    response = metadata
+                elif mode == 'hello':
+                    response = metadata
+                elif mode == 'keepalive':
+                    lease.check(request.get('_session'))
+                    response = metadata
+                else:
+                    lease.check(request.get('_session'))
+                    response = server.predict(mode, request)
             except Exception as error:
                 traceback.print_exc()
                 response = {"status": "error", "message": str(error)}
-            socket.send(pickle.dumps(response, protocol=pickle.HIGHEST_PROTOCOL))
+            socket.send(pickle.dumps(encode(response), protocol=pickle.HIGHEST_PROTOCOL))
     finally:
         socket.close()
         context.term()
